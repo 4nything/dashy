@@ -1,0 +1,273 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+@theme {
+  /* ── Layered dark palette ──────────────────────────────────────────────
+     Subtle cool undertone (closer to deep navy than pure black). The four
+     bg tiers create depth: body → panel → card → hover. */
+  --color-bg: #0a0b10;
+  --color-bg-2: #0f1118;
+  --color-bg-3: #161924;
+  --color-bg-4: #1f2330;
+
+  --color-border: #1d2030;
+  --color-border-strong: #2a2e42;
+
+  --color-text: #e8eaf2;
+  --color-text-dim: #8a8fa3;
+  --color-text-faint: #54596b;
+
+  /* Violet accent — used for selection, primary CTA, focus. */
+  --color-accent: #8b5cf6;
+  --color-accent-hover: #a78bfa;
+  --color-accent-bg: rgba(139, 92, 246, 0.14);
+  --color-accent-glow: rgba(139, 92, 246, 0.45);
+
+  /* Status colors — emerald is more readable than the old green on dark. */
+  --color-success: #10b981;
+  --color-success-glow: rgba(16, 185, 129, 0.55);
+  --color-warning: #f59e0b;
+  --color-warning-glow: rgba(245, 158, 11, 0.5);
+  --color-danger: #ef4444;
+  --color-danger-glow: rgba(239, 68, 68, 0.45);
+
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular,
+    Menlo, Monaco, Consolas, monospace;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+/* Subtle radial glow at the top of the main panel — gives depth without
+   being noisy. The accent leak hints at the brand color. */
+.app-bg {
+  background:
+    radial-gradient(
+      ellipse 80% 40% at 50% 0%,
+      rgba(139, 92, 246, 0.04),
+      transparent 60%
+    ),
+    var(--color-bg);
+}
+
+/* Sidebar fade — top is slightly lighter, fades to the bg color. */
+.sidebar-bg {
+  background:
+    linear-gradient(
+      180deg,
+      var(--color-bg-2) 0%,
+      var(--color-bg) 100%
+    );
+}
+
+/* Status dot helpers — solid color + soft glow.
+   Pulse anim is reserved for running state. */
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  flex-shrink: 0;
+}
+.dot-running {
+  background: var(--color-success);
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.18),
+    0 0 8px var(--color-success-glow);
+  animation: dot-pulse 2.4s ease-in-out infinite;
+}
+.dot-stopped {
+  background: var(--color-text-faint);
+}
+.dot-warning {
+  background: var(--color-warning);
+  box-shadow: 0 0 6px var(--color-warning-glow);
+  animation: dot-pulse 1.4s ease-in-out infinite;
+}
+.dot-crashed {
+  background: var(--color-danger);
+  box-shadow: 0 0 6px var(--color-danger-glow);
+}
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
+}
+
+/* Status pill — used in service header. */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  border: 1px solid;
+}
+.status-pill-running {
+  color: var(--color-success);
+  border-color: rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.08);
+}
+.status-pill-stopped {
+  color: var(--color-text-dim);
+  border-color: var(--color-border);
+  background: var(--color-bg-3);
+}
+.status-pill-warning {
+  color: var(--color-warning);
+  border-color: rgba(245, 158, 11, 0.3);
+  background: rgba(245, 158, 11, 0.08);
+}
+.status-pill-crashed {
+  color: var(--color-danger);
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+/* Buttons — softly pressable. */
+.btn-primary {
+  background: var(--color-accent);
+  color: white;
+  font-weight: 500;
+  transition: background 120ms ease, transform 80ms ease;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+.btn-primary:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: var(--color-bg-3);
+  border: 1px solid var(--color-border-strong);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--color-bg-4);
+  border-color: var(--color-text-faint);
+}
+.btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-ghost {
+  color: var(--color-text-dim);
+  transition: background 120ms ease, color 120ms ease;
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--color-bg-3);
+  color: var(--color-text);
+}
+.btn-ghost:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-danger {
+  color: var(--color-danger);
+}
+.btn-danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* Selected sidebar item — left accent bar + subtle bg. */
+.sidebar-item-active {
+  background: var(--color-accent-bg);
+  position: relative;
+}
+.sidebar-item-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--color-accent);
+  border-radius: 0 2px 2px 0;
+}
+
+/* xterm wrapper — refined frame. */
+.terminal-frame {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: #0c0e14;
+  overflow: hidden;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.02) inset,
+    0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+/* Card / surface used by dialogs + service header. */
+.surface {
+  background: var(--color-bg-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+input, textarea, select {
+  color-scheme: dark;
+}
+
+/* Custom scrollbars — thin, accent on hover. */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-faint);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Wider scrollbar inside xterm — the terminal is the most-scrolled surface
+   in the app and the 6px global one was almost invisible against the
+   black background. */
+.xterm-viewport::-webkit-scrollbar {
+  width: 12px;
+}
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: #2a2e42;
+  border-radius: 6px;
+  border: 3px solid #0c0e14;
+}
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: #3d4258;
+}
+.xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Tighten Kobalte's dropdown animations a hair so they feel snappy. */
+[data-kb-dropdown-menu-content],
+[data-kb-dialog-content] {
+  outline: none;
+}

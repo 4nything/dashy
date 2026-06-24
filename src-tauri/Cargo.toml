@@ -1,0 +1,37 @@
+[package]
+name = "dashy"
+version = "0.2.0"
+description = "Service dashboard with grouped terminals"
+authors = ["lucho"]
+edition = "2021"
+
+[lib]
+name = "dashy_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "devtools"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-os = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "io-util"] }
+parking_lot = "0.12"
+
+# PTY-backed process spawning so child processes get a real TTY
+# (colors, line buffering, prompts etc. behave like a normal terminal).
+portable-pty = "0.8"
+bytes = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
