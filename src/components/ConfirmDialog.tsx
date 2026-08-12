@@ -14,7 +14,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
   return (
     <AlertDialog open={props.open} onOpenChange={(o) => !o && props.onCancel()}>
       <AlertDialog.Portal>
-        <AlertDialog.Overlay class="fixed inset-0 z-40 bg-black/50" />
+        <AlertDialog.Overlay class="fixed inset-0 z-40 bg-black/55 backdrop-blur-sm" />
         <div class="fixed inset-0 z-50 grid place-items-center pointer-events-none">
           <AlertDialog.Content class="pointer-events-auto w-[420px] surface p-5 shadow-2xl">
             <AlertDialog.Title class="text-base font-semibold mb-1">
@@ -27,7 +27,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
               <button
                 type="button"
                 onClick={props.onCancel}
-                class="btn-secondary px-3.5 h-8 text-[13px] rounded-md"
+                class="btn-secondary px-3.5 h-8 text-[13px] rounded-xl"
               >
                 Cancel
               </button>
@@ -36,8 +36,8 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                 onClick={props.onConfirm}
                 class={
                   props.destructive
-                    ? "px-3.5 h-8 text-[13px] rounded-md bg-[var(--color-danger)] text-white hover:bg-[#dc2626] active:scale-[0.97] transition"
-                    : "btn-primary px-3.5 h-8 text-[13px] rounded-md"
+                    ? "px-3.5 h-8 text-[13px] rounded-xl bg-[var(--color-danger)] text-white hover:bg-[#dc2626] active:scale-[0.97] transition"
+                    : "btn-primary px-3.5 h-8 text-[13px] rounded-xl"
                 }
               >
                 {props.confirmLabel ?? "Confirm"}

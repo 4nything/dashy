@@ -10,12 +10,64 @@ import {
   ptyWrite,
 } from "./pty";
 
-// Per-service xterm + persistent shell. Selecting a service auto-spawns a
-// `cmd` PTY rooted at the service's cwd; the user can then type commands
-// freely (install deps, inspect git, etc.) and clicking Start types the
-// configured command into that same shell. Stop sends Ctrl+C — the shell
-// stays alive for further use.
-interface ServiceTerminal {
+// Per-pane xterm + persistent shell. Opening a service auto-spawns a `cmd`
+// PTY rooted at its cwd; the user can type freely and clicking Start types
+// the configured command into that same shell. Splitting a service adds
+// another pane, each with its own independent shell.
+//
+// Beyond plumbing bytes, this module watches the stream to answer two
+// questions the UI needs and the PTY can't tell us directly:
+//
+//   1. Is the shell busy? We can't ask cmd.exe, so we look at where the
+//      cursor is sitting once output settles. Cursor parked on a prompt =
+//      idle; anything else = a foreground process owns the terminal. That
+//      makes a hand-typed `npm run dev` light up the status dot exactly
+//      like the Start button does.
+//
+//   2. Did Ctrl+C hit a batch wrapper? npm/ng/yarn are .cmd shims, so cmd
+//      answers Ctrl+C with "Terminate batch job (Y/N)?" and waits. We reply
+//      for the user instead of making them press Ctrl+C twice.
+
+export type ShellActivity = "idle" | "busy";
+
+export interface PaneHooks {
+  onActivity?: (activity: ShellActivity) => void;
+  /** Fired when the user submits a command line by hand. */
+  onCommand?: (command: string) => void;
+  onExit?: (code: number) => void;
+}
+
+/**
+ * A cmd.exe / PowerShell prompt anchored at the start of the cursor line.
+ * Deliberately a prefix match: `C:\proj>npm run d` is still "sitting at a
+ * prompt, mid-typing", which is what keeps half-typed commands from being
+ * mistaken for a running process.
+ */
+const PROMPT_RE = /^(?:PS\s+)?[A-Za-z]:\\[^\n>]*>/;
+
+/**
+ * The batch-job question. The wording is localized (EN "Terminate batch job
+ * (Y/N)?", ES "(S/N)", DE "(J/N)", FR "(O/N)") but the shape isn't, and the
+ * affirmative is always the first letter — so we echo back whatever it is
+ * rather than hardcoding "Y".
+ */
+const BATCH_PROMPT_RE = /\(\s*([A-Za-z])\s*\/\s*([A-Za-z])\s*\)\s*\?/;
+
+/** How long output must be quiet before we re-read the cursor line. */
+const SETTLE_MS = 130;
+/**
+ * A chatty process (a dev server logging every few ms) would defer the
+ * settle check forever, so we force one at least this often. Without it,
+ * the noisiest processes — exactly the ones worth showing as running —
+ * would never flip the status.
+ */
+const MAX_SETTLE_DEFER_MS = 500;
+/** How long after a Ctrl+C we keep watching for the batch-job question. */
+const STOP_WINDOW_MS = 10_000;
+/** Only the tail of the stream can contain a live prompt. */
+const TAIL_LIMIT = 400;
+
+interface PaneTerminal {
   term: Terminal;
   fit: FitAddon;
   shellPtyId: string | null;
@@ -23,11 +75,28 @@ interface ServiceTerminal {
   unlistenExit?: UnlistenFn;
   inputDisposer?: { dispose(): void };
   resizeDisposer?: { dispose(): void };
-  onShellExit: ((code: number) => void) | null;
+  hooks: PaneHooks;
+  activity: ShellActivity;
+  lastCommand: string | null;
+  /** Element currently hosting the xterm, or null while parked offscreen. */
+  host: HTMLElement | null;
+  /** Viewport line to restore after re-mounting; see restoreScroll(). */
+  savedViewportY: number;
+  savedAtBottom: boolean;
+  settleTimer?: number;
+  /** Epoch ms of the first output in the current un-settled burst; 0 when idle. */
+  settlePendingSince: number;
+  /** Epoch ms until which a Ctrl+C reply is expected; 0 when not stopping. */
+  stopDeadline: number;
+  /** Rolling plain-text tail of recent output, used for prompt matching. */
+  tail: string;
+  idleWaiters: Set<() => void>;
 }
 
-const cache = new Map<string, ServiceTerminal>();
+const cache = new Map<string, PaneTerminal>();
 
+// Terminals are never destroyed on navigation — they're moved into a hidden
+// stash so scrollback and the live shell survive switching services.
 let stashEl: HTMLDivElement | null = null;
 function getStash(): HTMLDivElement {
   if (!stashEl) {
@@ -45,38 +114,40 @@ function getStash(): HTMLDivElement {
   return stashEl;
 }
 
-let visibleServiceId: string | null = null;
-
-function makeTerminal(): ServiceTerminal {
+function makeTerminal(): PaneTerminal {
   const term = new Terminal({
     fontFamily:
       '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace',
     fontSize: 13,
-    lineHeight: 1.3,
+    lineHeight: 1.35,
     cursorBlink: true,
+    cursorStyle: "bar",
+    cursorWidth: 2,
     allowProposedApi: true,
+    // Lets the frosted panel behind the terminal show through.
+    allowTransparency: true,
     theme: {
-      background: "#0c0e14",
-      foreground: "#e8eaf2",
-      cursor: "#8b5cf6",
-      cursorAccent: "#0c0e14",
-      selectionBackground: "rgba(139, 92, 246, 0.3)",
+      background: "rgba(9, 11, 19, 0.62)",
+      foreground: "#e7eaf6",
+      cursor: "#a78bfa",
+      cursorAccent: "#0b0d15",
+      selectionBackground: "rgba(139, 92, 246, 0.32)",
       black: "#1a1d29",
-      red: "#ef4444",
-      green: "#10b981",
-      yellow: "#f59e0b",
-      blue: "#60a5fa",
-      magenta: "#a78bfa",
-      cyan: "#22d3ee",
+      red: "#ff6b6b",
+      green: "#3ddc97",
+      yellow: "#ffc857",
+      blue: "#6fb1fc",
+      magenta: "#b18cff",
+      cyan: "#4fe3d7",
       white: "#cbd0e0",
-      brightBlack: "#54596b",
-      brightRed: "#f87171",
-      brightGreen: "#34d399",
-      brightYellow: "#fbbf24",
-      brightBlue: "#93c5fd",
-      brightMagenta: "#c4b5fd",
-      brightCyan: "#67e8f9",
-      brightWhite: "#e8eaf2",
+      brightBlack: "#5b6079",
+      brightRed: "#ff8f8f",
+      brightGreen: "#5ef0b0",
+      brightYellow: "#ffd77a",
+      brightBlue: "#9ccbff",
+      brightMagenta: "#cbb2ff",
+      brightCyan: "#7ff5eb",
+      brightWhite: "#f2f4ff",
     },
     scrollback: 5000,
   });
@@ -86,67 +157,253 @@ function makeTerminal(): ServiceTerminal {
     term,
     fit,
     shellPtyId: null,
-    onShellExit: null,
+    hooks: {},
+    activity: "idle",
+    lastCommand: null,
+    host: null,
+    savedViewportY: 0,
+    savedAtBottom: true,
+    settlePendingSince: 0,
+    stopDeadline: 0,
+    tail: "",
+    idleWaiters: new Set(),
   };
 }
 
-export function getServiceTerminal(serviceId: string): ServiceTerminal {
-  let entry = cache.get(serviceId);
+export function getPaneTerminal(paneId: string): PaneTerminal {
+  let entry = cache.get(paneId);
   if (!entry) {
     entry = makeTerminal();
-    cache.set(serviceId, entry);
+    cache.set(paneId, entry);
   }
   return entry;
 }
 
-export function attachToHost(serviceId: string, host: HTMLDivElement): void {
-  const entry = getServiceTerminal(serviceId);
+export function setPaneHooks(paneId: string, hooks: PaneHooks): void {
+  getPaneTerminal(paneId).hooks = hooks;
+}
 
-  if (visibleServiceId && visibleServiceId !== serviceId) {
-    const prev = cache.get(visibleServiceId);
-    if (prev?.term.element) {
-      getStash().appendChild(prev.term.element);
-    }
-  }
+// ── Mounting ───────────────────────────────────────────────────────────────
+
+export function isAtBottom(paneId: string): boolean {
+  const entry = cache.get(paneId);
+  if (!entry) return true;
+  const buf = entry.term.buffer.active;
+  return buf.viewportY >= buf.baseY;
+}
+
+/**
+ * Moving an element between parents resets `scrollTop` on everything
+ * scrollable inside it, which leaves xterm's viewport out of sync with its
+ * buffer: the right text is on screen, but the scrollbar sits at the top
+ * and the wheel scrolls from the wrong place. Bouncing the scroll position
+ * makes xterm re-emit onScroll, which re-syncs the DOM to the buffer.
+ */
+function restoreScroll(entry: PaneTerminal): void {
+  const buf = entry.term.buffer.active;
+  const target = entry.savedAtBottom
+    ? buf.baseY
+    : Math.min(Math.max(entry.savedViewportY, 0), buf.baseY);
+
+  entry.term.scrollToTop();
+  if (target > 0) entry.term.scrollToLine(target);
+}
+
+export function attachPane(paneId: string, host: HTMLElement): void {
+  const entry = getPaneTerminal(paneId);
 
   if (!entry.term.element) {
     entry.term.open(host);
   } else if (entry.term.element.parentElement !== host) {
     host.appendChild(entry.term.element);
   }
-
-  visibleServiceId = serviceId;
+  entry.host = host;
 
   requestAnimationFrame(() => {
-    try {
-      entry.fit.fit();
-      entry.term.refresh(0, entry.term.rows - 1);
-      entry.term.focus();
-    } catch {
-      // ignore
-    }
+    refitPane(paneId);
+    restoreScroll(entry);
   });
 }
 
-export function parkVisible(): void {
-  if (!visibleServiceId) return;
-  const entry = cache.get(visibleServiceId);
-  if (entry?.term.element) {
-    getStash().appendChild(entry.term.element);
-  }
-  visibleServiceId = null;
+/**
+ * Park a pane's terminal offscreen. `host` is the element the caller thinks
+ * it owns — if another view has already adopted the terminal (switching to
+ * the grid can mount the new host before the old one tears down), this is a
+ * no-op instead of yanking the terminal out of the live view.
+ */
+export function detachPane(paneId: string, host?: HTMLElement): void {
+  const entry = cache.get(paneId);
+  if (!entry) return;
+  if (host && entry.host !== host) return;
+  const buf = entry.term.buffer.active;
+  entry.savedViewportY = buf.viewportY;
+  entry.savedAtBottom = buf.viewportY >= buf.baseY;
+  if (entry.term.element) getStash().appendChild(entry.term.element);
+  entry.host = null;
 }
 
-export function refitVisible(): void {
-  if (!visibleServiceId) return;
-  const entry = cache.get(visibleServiceId);
-  if (!entry) return;
+export function refitPane(paneId: string): void {
+  const entry = cache.get(paneId);
+  // Skip parked terminals — they'd fit themselves to the stash's fake size.
+  if (!entry?.host) return;
   try {
     entry.fit.fit();
     entry.term.refresh(0, entry.term.rows - 1);
   } catch {
-    // ignore
+    // Host not laid out yet; the next resize tick will catch it.
   }
+}
+
+export function focusPane(paneId: string): void {
+  cache.get(paneId)?.term.focus();
+}
+
+// ── Activity detection ─────────────────────────────────────────────────────
+
+/**
+ * The whole logical line the cursor sits on, re-joined across soft wraps.
+ * Without the un-wrapping a long command would push the cursor onto a
+ * continuation row, the prompt would fall off the front of it, and we'd
+ * mistake "still typing" for "a process is running".
+ */
+function cursorLine(entry: PaneTerminal): string {
+  const buf = entry.term.buffer.active;
+  const cursorRow = buf.baseY + buf.cursorY;
+
+  let start = cursorRow;
+  while (start > 0 && buf.getLine(start)?.isWrapped) start -= 1;
+
+  let text = "";
+  for (let row = start; row <= cursorRow; row++) {
+    const line = buf.getLine(row);
+    if (!line) break;
+    // Interior rows of a wrap are full-width, so only the last one is
+    // worth trimming.
+    text += line.translateToString(row === cursorRow);
+  }
+  return text;
+}
+
+function isAtPrompt(entry: PaneTerminal): boolean {
+  return PROMPT_RE.test(cursorLine(entry));
+}
+
+function resolveIdleWaiters(entry: PaneTerminal) {
+  const waiters = [...entry.idleWaiters];
+  entry.idleWaiters.clear();
+  for (const w of waiters) w();
+}
+
+function runSettle(entry: PaneTerminal) {
+  if (entry.settleTimer !== undefined) {
+    clearTimeout(entry.settleTimer);
+    entry.settleTimer = undefined;
+  }
+  entry.settlePendingSince = 0;
+
+  const next: ShellActivity = isAtPrompt(entry) ? "idle" : "busy";
+  if (next === entry.activity) return;
+  entry.activity = next;
+  if (next === "idle") {
+    entry.stopDeadline = 0;
+    resolveIdleWaiters(entry);
+  }
+  entry.hooks.onActivity?.(next);
+}
+
+function scheduleSettle(entry: PaneTerminal) {
+  const now = Date.now();
+  if (entry.settlePendingSince === 0) entry.settlePendingSince = now;
+
+  // Output that never stops still has to be evaluated eventually.
+  if (now - entry.settlePendingSince >= MAX_SETTLE_DEFER_MS) {
+    runSettle(entry);
+    return;
+  }
+
+  if (entry.settleTimer !== undefined) clearTimeout(entry.settleTimer);
+  entry.settleTimer = window.setTimeout(() => runSettle(entry), SETTLE_MS);
+}
+
+/** Strip escape sequences so prompt matching isn't fooled by color codes. */
+function plain(chunk: string): string {
+  return chunk
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[@-Z\\-_]/g, "");
+}
+
+function handleOutput(entry: PaneTerminal, chunk: string) {
+  entry.tail = (entry.tail + plain(chunk)).slice(-TAIL_LIMIT);
+
+  // Only inside a stop window, so a legitimate "(y/n)" question from the
+  // user's own program is never answered behind their back.
+  if (entry.stopDeadline > Date.now()) {
+    const match = BATCH_PROMPT_RE.exec(entry.tail);
+    if (match) {
+      entry.tail = "";
+      const affirmative = match[1];
+      if (entry.shellPtyId) {
+        ptyWrite(entry.shellPtyId, `${affirmative}\r`).catch(() => {});
+      }
+    }
+  }
+
+  scheduleSettle(entry);
+}
+
+/** Everything the user typed after the prompt on the current line. */
+function pendingCommand(entry: PaneTerminal): string {
+  const text = cursorLine(entry);
+  const match = PROMPT_RE.exec(text);
+  if (!match) return "";
+  return text.slice(match[0].length).trim();
+}
+
+export function getActivity(paneId: string): ShellActivity {
+  return cache.get(paneId)?.activity ?? "idle";
+}
+
+export function getLastCommand(paneId: string): string | null {
+  return cache.get(paneId)?.lastCommand ?? null;
+}
+
+export function setLastCommand(paneId: string, command: string | null): void {
+  getPaneTerminal(paneId).lastCommand = command;
+}
+
+/**
+ * Arm the batch-job auto-answer. Called whenever a Ctrl+C is sent, whether
+ * by the Stop button or typed by the user.
+ */
+export function beginStopWindow(paneId: string): void {
+  const entry = getPaneTerminal(paneId);
+  entry.stopDeadline = Date.now() + STOP_WINDOW_MS;
+  entry.tail = "";
+}
+
+/** Resolves true once the shell is back at a prompt, false on timeout. */
+export function waitForIdle(paneId: string, timeoutMs = 8000): Promise<boolean> {
+  const entry = getPaneTerminal(paneId);
+  if (entry.activity === "idle") return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let timer: number | undefined;
+    const waiter = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      resolve(true);
+    };
+    timer = window.setTimeout(() => {
+      entry.idleWaiters.delete(waiter);
+      resolve(false);
+    }, timeoutMs);
+    entry.idleWaiters.add(waiter);
+  });
+}
+
+export function writeToPane(paneId: string, data: string): Promise<void> {
+  const entry = cache.get(paneId);
+  if (!entry?.shellPtyId) return Promise.resolve();
+  return ptyWrite(entry.shellPtyId, data);
 }
 
 // ── Shell lifecycle ────────────────────────────────────────────────────────
@@ -158,16 +415,15 @@ function shellCommand(): { command: string; args: string[] } {
 }
 
 /**
- * Spawn the persistent cmd shell for `serviceId` if it isn't already running.
+ * Spawn the persistent cmd shell for `paneId` if it isn't already running.
  * Idempotent — calling twice is a no-op once a shell is up.
  */
 export async function ensureShell(
-  serviceId: string,
+  paneId: string,
   cwd: string,
   env: Record<string, string>,
-  onShellExit: (code: number) => void,
 ): Promise<string> {
-  const entry = getServiceTerminal(serviceId);
+  const entry = getPaneTerminal(paneId);
   if (entry.shellPtyId) return entry.shellPtyId;
 
   // Tear down any stale bindings before opening a new shell.
@@ -177,11 +433,24 @@ export async function ensureShell(
   entry.resizeDisposer?.dispose();
 
   const ptyId = newPtyId();
-  entry.onShellExit = onShellExit;
 
   entry.inputDisposer = entry.term.onData((data) => {
-    if (entry.shellPtyId) ptyWrite(entry.shellPtyId, data).catch(() => {});
+    if (!entry.shellPtyId) return;
+    // Read the command off the screen rather than accumulating keystrokes —
+    // that way history recall (↑) and clipboard pastes are captured too.
+    if (data.includes("\r")) {
+      const cmd = pendingCommand(entry);
+      if (cmd) {
+        entry.lastCommand = cmd;
+        entry.hooks.onCommand?.(cmd);
+      }
+    }
+    // A hand-typed Ctrl+C deserves the same batch-prompt handling as the
+    // Stop button, otherwise the user is back to answering Y themselves.
+    if (data.includes("\x03")) beginStopWindow(paneId);
+    ptyWrite(entry.shellPtyId, data).catch(() => {});
   });
+
   entry.resizeDisposer = entry.term.onResize(({ cols, rows }) => {
     if (entry.shellPtyId) ptyResize(entry.shellPtyId, cols, rows).catch(() => {});
   });
@@ -189,16 +458,20 @@ export async function ensureShell(
   // CRITICAL: subscribe to data + exit before invoking spawn; the Rust
   // reader thread starts streaming the cmd banner as soon as the child
   // exists, and missed bytes can't be replayed.
-  entry.unlistenData = await onPtyData(ptyId, (chunk) => entry.term.write(chunk));
+  entry.unlistenData = await onPtyData(ptyId, (chunk) => {
+    entry.term.write(chunk);
+    handleOutput(entry, chunk);
+  });
   entry.unlistenExit = await onPtyExit(ptyId, (code) => {
     entry.shellPtyId = null;
     entry.unlistenData?.();
     entry.unlistenExit?.();
     entry.unlistenData = undefined;
     entry.unlistenExit = undefined;
-    const cb = entry.onShellExit;
-    entry.onShellExit = null;
-    cb?.(code);
+    entry.activity = "idle";
+    entry.stopDeadline = 0;
+    resolveIdleWaiters(entry);
+    entry.hooks.onExit?.(code);
   });
 
   entry.shellPtyId = ptyId;
@@ -217,18 +490,19 @@ export async function ensureShell(
   return ptyId;
 }
 
-export function getShellPtyId(serviceId: string): string | null {
-  return cache.get(serviceId)?.shellPtyId ?? null;
+export function getShellPtyId(paneId: string): string | null {
+  return cache.get(paneId)?.shellPtyId ?? null;
 }
 
-export function disposeServiceTerminal(serviceId: string): void {
-  const entry = cache.get(serviceId);
+export function disposePaneTerminal(paneId: string): void {
+  const entry = cache.get(paneId);
   if (!entry) return;
+  if (entry.settleTimer !== undefined) clearTimeout(entry.settleTimer);
   entry.unlistenData?.();
   entry.unlistenExit?.();
   entry.inputDisposer?.dispose();
   entry.resizeDisposer?.dispose();
-  if (visibleServiceId === serviceId) visibleServiceId = null;
+  resolveIdleWaiters(entry);
   entry.term.dispose();
-  cache.delete(serviceId);
+  cache.delete(paneId);
 }

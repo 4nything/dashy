@@ -1,63 +1,60 @@
+import { ArrowClockwiseIcon } from "@squidlab/phosphor-solid/arrow-clockwise";
 import { CircleNotchIcon } from "@squidlab/phosphor-solid/circle-notch";
+import { ColumnsPlusRightIcon } from "@squidlab/phosphor-solid/columns-plus-right";
 import { PlayIcon } from "@squidlab/phosphor-solid/play";
 import { StopIcon } from "@squidlab/phosphor-solid/stop";
 import { TerminalIcon } from "@squidlab/phosphor-solid/terminal";
-import { Show, createMemo } from "solid-js";
-import { appsStore, findService } from "../stores/apps.store";
-import { startService, stopService } from "../services/service-runner";
-import type { Service } from "../types";
-import { TerminalView } from "./Terminal";
-
-function StatusPill(props: { status: Service["status"] }) {
-  const labelMap: Record<Service["status"], string> = {
-    stopped: "Stopped",
-    starting: "Starting",
-    running: "Running",
-    stopping: "Stopping",
-    crashed: "Crashed",
-  };
-  const dotClassMap: Record<Service["status"], string> = {
-    stopped: "dot dot-stopped",
-    starting: "dot dot-warning",
-    stopping: "dot dot-warning",
-    running: "dot dot-running",
-    crashed: "dot dot-crashed",
-  };
-  const pillClassMap: Record<Service["status"], string> = {
-    stopped: "status-pill status-pill-stopped",
-    starting: "status-pill status-pill-warning",
-    stopping: "status-pill status-pill-warning",
-    running: "status-pill status-pill-running",
-    crashed: "status-pill status-pill-crashed",
-  };
-  return (
-    <span class={pillClassMap[props.status]}>
-      <span class={dotClassMap[props.status]} style={{ width: "6px", height: "6px" }} />
-      {labelMap[props.status]}
-    </span>
-  );
-}
+import { Show, createEffect, createMemo } from "solid-js";
+import {
+  addPane,
+  appsStore,
+  ensureActivePane,
+  findService,
+  serviceStatus,
+} from "../stores/apps.store";
+import {
+  restartService,
+  restartTarget,
+  startService,
+  stopService,
+} from "../services/service-runner";
+import { statusLabel, statusPillClass, statusDotClass } from "./status";
+import { TerminalSplit } from "./TerminalSplit";
 
 export function ServicePanel() {
   const service = createMemo(() =>
     appsStore.selectedServiceId ? findService(appsStore.selectedServiceId) : undefined,
   );
 
+  // Opening a service materialises its first terminal. Idempotent, so this
+  // re-running when panes change is harmless.
+  createEffect(() => {
+    const svc = service();
+    if (svc) ensureActivePane(svc.id);
+  });
+
+  const status = createMemo(() => {
+    const svc = service();
+    return svc ? serviceStatus(svc) : "stopped";
+  });
+
+  const activePaneId = createMemo(() => service()?.activePaneId ?? null);
+
   return (
-    <main class="flex-1 flex flex-col min-w-0 app-bg">
+    <main class="flex-1 flex flex-col min-w-0 panel glass">
       <Show
         when={service()}
         fallback={
           <div class="flex-1 grid place-items-center">
             <div class="text-center">
-              <div class="size-14 rounded-2xl bg-[var(--color-bg-2)] grid place-items-center mx-auto mb-4 border border-[var(--color-border)] shadow-[0_0_24px_rgba(139,92,246,0.06)]">
-                <TerminalIcon size={26} weight="duotone" class="text-[var(--color-text-dim)]" />
+              <div class="size-16 rounded-3xl glass-raised grid place-items-center mx-auto mb-4">
+                <TerminalIcon size={28} weight="duotone" class="text-[var(--color-text-dim)]" />
               </div>
               <p class="text-sm font-medium text-[var(--color-text-dim)] mb-1">
                 Select a service from the sidebar
               </p>
               <p class="text-xs text-[var(--color-text-faint)]">
-                Or hit <kbd class="px-1.5 py-0.5 rounded text-[10px] bg-[var(--color-bg-3)] border border-[var(--color-border)] font-mono">+</kbd> to add a new app
+                Or hit <Kbd>+</Kbd> to add a new app
               </p>
             </div>
           </div>
@@ -65,65 +62,102 @@ export function ServicePanel() {
       >
         {(svc) => (
           <>
-            <header class="px-6 h-12 border-b border-[var(--color-border)] flex items-center justify-between bg-[var(--color-bg-2)]/40 backdrop-blur">
+            <header class="px-4 h-14 flex items-center justify-between gap-3 border-b border-[var(--color-border)]">
               <div class="min-w-0 flex items-center gap-3">
-                <h1 class="text-[15px] font-semibold truncate">{svc().name}</h1>
-                <StatusPill status={svc().status} />
+                <h1 class="text-[15px] font-semibold tracking-tight truncate">
+                  {svc().name}
+                </h1>
+                <span class={statusPillClass(status())}>
+                  <span
+                    class={statusDotClass(status())}
+                    style={{ width: "6px", height: "6px" }}
+                  />
+                  {statusLabel(status())}
+                </span>
               </div>
 
               <div class="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => startService(svc().id)}
-                  class="btn-primary px-3.5 h-8 text-[13px] rounded-md flex items-center gap-1.5"
-                  disabled={
-                    svc().status === "running" ||
-                    svc().status === "starting" ||
-                    svc().status === "stopping"
-                  }
+                  class="btn-primary px-3.5 h-8 text-[13px] rounded-xl flex items-center gap-1.5"
+                  disabled={status() === "starting" || status() === "stopping"}
                 >
                   <Show
-                    when={svc().status === "starting"}
+                    when={status() === "starting"}
                     fallback={<PlayIcon size={11} weight="fill" />}
                   >
                     <CircleNotchIcon size={11} weight="bold" class="animate-spin" />
                   </Show>
-                  {svc().status === "starting" ? "Starting…" : "Start"}
+                  {status() === "starting" ? "Starting…" : "Start"}
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => restartService(svc().id)}
+                  class="btn-secondary px-3.5 h-8 text-[13px] rounded-xl flex items-center gap-1.5"
+                  disabled={status() === "starting" || status() === "stopping"}
+                  title={
+                    activePaneId()
+                      ? `Restart: ${restartTarget(activePaneId()!) ?? "last command"}`
+                      : "Restart the last command"
+                  }
+                >
+                  <ArrowClockwiseIcon size={12} weight="bold" />
+                  Restart
+                </button>
+
                 <button
                   type="button"
                   onClick={() => stopService(svc().id)}
-                  class="btn-secondary px-3.5 h-8 text-[13px] rounded-md flex items-center gap-1.5"
-                  disabled={svc().status !== "running"}
+                  class="btn-secondary px-3.5 h-8 text-[13px] rounded-xl flex items-center gap-1.5"
+                  disabled={status() === "stopped" || status() === "stopping"}
                 >
                   <Show
-                    when={svc().status === "stopping"}
+                    when={status() === "stopping"}
                     fallback={<StopIcon size={11} weight="fill" />}
                   >
                     <CircleNotchIcon size={11} weight="bold" class="animate-spin" />
                   </Show>
-                  {svc().status === "stopping" ? "Stopping…" : "Stop"}
+                  {status() === "stopping" ? "Stopping…" : "Stop"}
+                </button>
+
+                <div class="w-px h-5 bg-[var(--color-border-strong)] mx-0.5" />
+
+                <button
+                  type="button"
+                  onClick={() => addPane(svc().id)}
+                  title="Split terminal (Ctrl+Shift+5)"
+                  class="size-8 grid place-items-center rounded-xl btn-ghost"
+                >
+                  <ColumnsPlusRightIcon size={15} weight="bold" />
                 </button>
               </div>
             </header>
 
-            <div class="px-6 pt-3 pb-1">
-              <p class="text-xs text-[var(--color-text-faint)] font-mono truncate">
+            <div class="px-4 pt-2.5 pb-1.5">
+              <p class="text-[11px] text-[var(--color-text-faint)] font-mono truncate">
                 <span class="text-[var(--color-text-dim)]">{svc().command}</span>{" "}
                 <span>{svc().args.join(" ")}</span>
-                <span class="opacity-50 mx-2">·</span>
+                <span class="opacity-40 mx-2">·</span>
                 <span class="text-[var(--color-text-dim)]">{svc().cwd}</span>
               </p>
             </div>
 
-            <div class="flex-1 px-6 pb-6 pt-2 overflow-hidden">
-              <div class="terminal-frame h-full w-full">
-                <TerminalView serviceId={svc().id} />
-              </div>
+            <div class="flex-1 px-4 pb-4 pt-1 overflow-hidden">
+              <TerminalSplit service={svc()} />
             </div>
           </>
         )}
       </Show>
     </main>
+  );
+}
+
+function Kbd(props: { children: any }) {
+  return (
+    <kbd class="px-1.5 py-0.5 rounded-md text-[10px] bg-[var(--color-bg-3)] border border-[var(--color-border-strong)] font-mono">
+      {props.children}
+    </kbd>
   );
 }

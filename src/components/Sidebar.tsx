@@ -1,153 +1,557 @@
 import { DropdownMenu } from "@kobalte/core/dropdown-menu";
+import { ArrowClockwiseIcon } from "@squidlab/phosphor-solid/arrow-clockwise";
 import { CaretDownIcon } from "@squidlab/phosphor-solid/caret-down";
 import { CaretRightIcon } from "@squidlab/phosphor-solid/caret-right";
 import { CircleNotchIcon } from "@squidlab/phosphor-solid/circle-notch";
+import { ColumnsPlusRightIcon } from "@squidlab/phosphor-solid/columns-plus-right";
+import { DotsSixVerticalIcon } from "@squidlab/phosphor-solid/dots-six-vertical";
 import { DotsThreeVerticalIcon } from "@squidlab/phosphor-solid/dots-three-vertical";
 import { PencilSimpleIcon } from "@squidlab/phosphor-solid/pencil-simple";
 import { PlayIcon } from "@squidlab/phosphor-solid/play";
 import { PlusIcon } from "@squidlab/phosphor-solid/plus";
+import { SquaresFourIcon } from "@squidlab/phosphor-solid/squares-four";
 import { StackIcon } from "@squidlab/phosphor-solid/stack";
 import { StopIcon } from "@squidlab/phosphor-solid/stop";
 import { TrashIcon } from "@squidlab/phosphor-solid/trash";
+import { XIcon } from "@squidlab/phosphor-solid/x";
 import { For, Show, createMemo, createSignal } from "solid-js";
 import {
+  addPane,
+  addServiceToGroup,
   appsStore,
   deleteApp as deleteAppAction,
+  deleteGroup as deleteGroupAction,
   deleteService as deleteServiceAction,
   findApp,
+  findGroup,
   findService,
+  groupServices,
+  groupStatus,
+  moveApp,
+  moveGroup,
+  moveGroupMember,
+  movePane,
+  moveService,
+  removeServiceFromGroup,
+  selectGroup,
   selectService,
+  serviceStatus,
+  setActivePane,
   toggleAppCollapsed,
+  toggleGroupCollapsed,
 } from "../stores/apps.store";
-import { ptyKill } from "../services/pty";
 import {
+  beginDrag,
+  clearDrop,
+  dragItem,
+  dropClass,
+  edgeFromEvent,
+  endDrag,
+  hoverDrop,
+  memberRowId,
+} from "../stores/dnd";
+import {
+  SIDEBAR_DEFAULT_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+  commitSidebarWidth,
+  setSidebarWidth,
+  uiStore,
+} from "../stores/ui.store";
+import {
+  closePane,
+  disposeServiceShells,
+  restartPane,
   startAllInGroup,
+  startGroup,
+  startPane,
   startService,
   stopAllInGroup,
+  stopGroup,
+  stopPane,
   stopService,
 } from "../services/service-runner";
-import { disposeServiceTerminal } from "../services/terminal-manager";
-import type { Service } from "../types";
+import { focusPane } from "../services/terminal-manager";
+import type { Service, ServiceStatus, TerminalGroup, TerminalPane } from "../types";
 import { AppDialog, type AppDialogTarget } from "./AppDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { GroupDialog, type GroupDialogTarget } from "./GroupDialog";
 import { ServiceDialog, type ServiceDialogTarget } from "./ServiceDialog";
-
-function statusDotClass(status: Service["status"]) {
-  const map: Record<Service["status"], string> = {
-    stopped: "dot dot-stopped",
-    starting: "dot dot-warning",
-    stopping: "dot dot-warning",
-    running: "dot dot-running",
-    crashed: "dot dot-crashed",
-  };
-  return map[status];
-}
+import { statusDotClass } from "./status";
 
 async function performDeleteService(serviceId: string) {
-  const svc = findService(serviceId);
-  if (svc?.ptyId) {
-    try {
-      await ptyKill(svc.ptyId);
-    } catch (e) {
-      console.error("pty kill on delete failed:", e);
-    }
-  }
-  disposeServiceTerminal(serviceId);
+  await disposeServiceShells(serviceId);
   deleteServiceAction(serviceId);
 }
 
 async function performDeleteApp(appId: string) {
   const app = findApp(appId);
   if (!app) return;
-  await Promise.all(
-    app.services.map(async (svc) => {
-      if (svc.ptyId) {
-        try {
-          await ptyKill(svc.ptyId);
-        } catch (e) {
-          console.error("pty kill on delete failed:", e);
-        }
-      }
-      disposeServiceTerminal(svc.id);
-    }),
-  );
+  await Promise.all(app.services.map((svc) => disposeServiceShells(svc.id)));
   deleteAppAction(appId);
 }
 
-// ── Service-level play/stop button ─────────────────────────────────────────
+function paneProcessName(pane: TerminalPane): string {
+  const cmd = pane.lastCommand?.trim();
+  if (!cmd) return "cmd";
+  return cmd.split(/\s+/)[0] ?? "cmd";
+}
 
-function ServiceRunButton(props: { service: Service }) {
-  const status = () => props.service.status;
-  const isRunning = () => status() === "running";
-  const isTransitioning = () => status() === "starting" || status() === "stopping";
+function startDrag(e: DragEvent, id: string) {
+  // Chromium won't initiate a drag without payload on the transfer.
+  e.dataTransfer?.setData("text/plain", id);
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+}
 
-  function onClick(e: MouseEvent) {
-    e.stopPropagation();
-    if (isRunning()) stopService(props.service.id);
-    else if (!isTransitioning()) startService(props.service.id);
-  }
+function acceptDrop(e: DragEvent) {
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+}
+
+// ── Run / stop toggle, shared by service rows and pane rows ────────────────
+
+function RunToggle(props: {
+  status: ServiceStatus;
+  size?: number;
+  onStart: () => void;
+  onStop: () => void;
+  title?: string;
+}) {
+  const isRunning = () => props.status === "running";
+  const isTransitioning = () =>
+    props.status === "starting" || props.status === "stopping";
 
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (isRunning()) props.onStop();
+        else if (!isTransitioning()) props.onStart();
+      }}
       disabled={isTransitioning()}
-      title={isRunning() ? "Stop" : "Start"}
-      class="size-6 shrink-0 grid place-items-center rounded-md btn-ghost"
+      title={props.title ?? (isRunning() ? "Stop" : "Start")}
+      class="size-6 shrink-0 grid place-items-center rounded-lg btn-ghost"
     >
       <Show
         when={isTransitioning()}
         fallback={
           isRunning() ? (
-            <StopIcon size={12} weight="fill" />
+            <StopIcon size={props.size ?? 11} weight="fill" />
           ) : (
-            <PlayIcon size={12} weight="fill" />
+            <PlayIcon size={props.size ?? 11} weight="fill" />
           )
         }
       >
-        <CircleNotchIcon size={12} weight="bold" class="animate-spin" />
+        <CircleNotchIcon size={props.size ?? 11} weight="bold" class="animate-spin" />
       </Show>
     </button>
   );
 }
 
-// ── Group-level run-all controls ───────────────────────────────────────────
-
 function GroupRunControls(props: { appId: string; services: Service[] }) {
-  const runningCount = () => props.services.filter((s) => s.status === "running").length;
+  const runningCount = () =>
+    props.services.filter((s) => serviceStatus(s) === "running").length;
   const startableCount = () =>
-    props.services.filter((s) => s.status === "stopped" || s.status === "crashed").length;
-
-  function onPlay(e: MouseEvent) {
-    e.stopPropagation();
-    startAllInGroup(props.appId);
-  }
-  function onStop(e: MouseEvent) {
-    e.stopPropagation();
-    stopAllInGroup(props.appId);
-  }
+    props.services.filter((s) => serviceStatus(s) !== "running").length;
 
   return (
     <>
       <button
         type="button"
-        onClick={onPlay}
+        onClick={(e) => {
+          e.stopPropagation();
+          startAllInGroup(props.appId);
+        }}
         disabled={startableCount() === 0}
-        title={`Start ${startableCount()} stopped service${startableCount() === 1 ? "" : "s"}`}
-        class="size-6 grid place-items-center rounded-md btn-ghost"
+        title={`Start ${startableCount()} idle service${startableCount() === 1 ? "" : "s"}`}
+        class="size-6 grid place-items-center rounded-lg btn-ghost"
       >
         <PlayIcon size={11} weight="fill" />
       </button>
       <button
         type="button"
-        onClick={onStop}
+        onClick={(e) => {
+          e.stopPropagation();
+          stopAllInGroup(props.appId);
+        }}
         disabled={runningCount() === 0}
         title={`Stop ${runningCount()} running service${runningCount() === 1 ? "" : "s"}`}
-        class="size-6 grid place-items-center rounded-md btn-ghost"
+        class="size-6 grid place-items-center rounded-lg btn-ghost"
       >
         <StopIcon size={11} weight="fill" />
       </button>
     </>
+  );
+}
+
+// ── Split terminals, nested under their service ────────────────────────────
+
+function PaneRows(props: { service: Service }) {
+  function focus(paneId: string) {
+    selectService(props.service.id);
+    setActivePane(paneId);
+    focusPane(paneId);
+  }
+
+  return (
+    <ul class="mt-0.5 mb-1">
+      <For each={props.service.panes}>
+        {(pane) => {
+          const isActive = () =>
+            appsStore.selectedServiceId === props.service.id &&
+            props.service.activePaneId === pane.id;
+
+          let row!: HTMLLIElement;
+
+          return (
+            <li
+              ref={row}
+              draggable={true}
+              onDragStart={(e) => {
+                e.stopPropagation();
+                startDrag(e, pane.id);
+                beginDrag({ kind: "pane", paneId: pane.id });
+              }}
+              onDragEnd={endDrag}
+              onDragOver={(e) => {
+                e.stopPropagation();
+                if (dragItem()?.kind !== "pane") return;
+                acceptDrop(e);
+                hoverDrop(pane.id, edgeFromEvent(e, row));
+              }}
+              onDragLeave={() => clearDrop(pane.id)}
+              onDrop={(e) => {
+                e.stopPropagation();
+                const item = dragItem();
+                if (item?.kind === "pane") {
+                  e.preventDefault();
+                  movePane(item.paneId, pane.id, edgeFromEvent(e, row));
+                }
+                endDrag();
+              }}
+              class={`pane-row draggable-row group/pane flex items-center pr-1 gap-0.5 rounded-lg transition-colors ${dropClass(pane.id)} ${
+                isActive() ? "sidebar-item-active" : "hover:bg-[var(--color-bg-3)]"
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => focus(pane.id)}
+                class={`flex-1 py-1 text-left text-[12px] flex items-center gap-2 min-w-0 transition-colors ${
+                  isActive()
+                    ? "text-[var(--color-text)]"
+                    : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+                }`}
+              >
+                <span
+                  class={statusDotClass(pane.status)}
+                  style={{ width: "6px", height: "6px" }}
+                />
+                <span class="truncate">
+                  {pane.index}: {paneProcessName(pane)}
+                </span>
+              </button>
+
+              <div class="flex items-center opacity-0 group-hover/pane:opacity-100 transition-opacity">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    restartPane(pane.id);
+                  }}
+                  title="Restart this terminal's last command"
+                  class="size-6 grid place-items-center rounded-lg btn-ghost"
+                >
+                  <ArrowClockwiseIcon size={11} weight="bold" />
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closePane(pane.id);
+                  }}
+                  title="Close terminal"
+                  class="size-6 grid place-items-center rounded-lg btn-ghost"
+                >
+                  <XIcon size={11} weight="bold" />
+                </button>
+              </div>
+
+              <RunToggle
+                status={pane.status}
+                onStart={() => startPane(pane.id)}
+                onStop={() => stopPane(pane.id)}
+              />
+            </li>
+          );
+        }}
+      </For>
+    </ul>
+  );
+}
+
+// ── Groups: hand-picked sets of services, tiled side by side ───────────────
+
+function GroupRows(props: {
+  group: TerminalGroup;
+  onEdit: (groupId: string) => void;
+  onDelete: (groupId: string) => void;
+}) {
+  const members = () => groupServices(props.group);
+  const status = () => groupStatus(props.group);
+  const runningCount = () =>
+    members().filter((svc) => serviceStatus(svc) === "running").length;
+  const isActive = () => appsStore.selectedGroupId === props.group.id;
+
+  let groupRow!: HTMLDivElement;
+
+  return (
+    <div class="mb-1">
+      <div
+        ref={groupRow}
+        draggable={true}
+        onDragStart={(e) => {
+          startDrag(e, props.group.id);
+          beginDrag({ kind: "group", groupId: props.group.id });
+        }}
+        onDragEnd={endDrag}
+        onDragOver={(e) => {
+          const item = dragItem();
+          if (item?.kind === "group") {
+            acceptDrop(e);
+            hoverDrop(props.group.id, edgeFromEvent(e, groupRow));
+          } else if (item?.kind === "service") {
+            // Dropping a service from the app tree adds it to the group.
+            acceptDrop(e);
+            hoverDrop(props.group.id, "after");
+          }
+        }}
+        onDragLeave={() => clearDrop(props.group.id)}
+        onDrop={(e) => {
+          const item = dragItem();
+          if (item?.kind === "group") {
+            e.preventDefault();
+            moveGroup(item.groupId, props.group.id, edgeFromEvent(e, groupRow));
+          } else if (item?.kind === "service") {
+            e.preventDefault();
+            addServiceToGroup(props.group.id, item.serviceId);
+          }
+          endDrag();
+        }}
+        class={`flex items-center pr-1 gap-0.5 rounded-lg transition-colors draggable-row group/grp ${dropClass(props.group.id)} ${
+          isActive() ? "sidebar-item-active" : "hover:bg-[var(--color-bg-3)]"
+        }`}
+      >
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            toggleGroupCollapsed(props.group.id);
+          }}
+          title={props.group.collapsed ? "Expand" : "Collapse"}
+          class="size-5 ml-1 shrink-0 grid place-items-center rounded btn-ghost"
+        >
+          <Show
+            when={props.group.collapsed}
+            fallback={<CaretDownIcon size={9} weight="bold" />}
+          >
+            <CaretRightIcon size={9} weight="bold" />
+          </Show>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => selectGroup(props.group.id)}
+          class={`flex-1 py-1.5 text-left text-[13px] flex items-center gap-2 min-w-0 transition-colors ${
+            isActive()
+              ? "text-[var(--color-text)]"
+              : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+          }`}
+        >
+          <span class={statusDotClass(status())} />
+          <span class="truncate font-medium">{props.group.name}</span>
+          <span class="pane-count shrink-0">
+            {runningCount()}/{members().length}
+          </span>
+        </button>
+
+        <div class="flex items-center gap-0.5 opacity-0 group-hover/grp:opacity-100 transition-opacity">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              startGroup(props.group.id);
+            }}
+            disabled={members().length === 0}
+            title="Start every service in this group"
+            class="size-6 grid place-items-center rounded-lg btn-ghost"
+          >
+            <PlayIcon size={11} weight="fill" />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              stopGroup(props.group.id);
+            }}
+            disabled={runningCount() === 0}
+            title="Stop every service in this group"
+            class="size-6 grid place-items-center rounded-lg btn-ghost"
+          >
+            <StopIcon size={11} weight="fill" />
+          </button>
+
+          <DropdownMenu placement="bottom-end" gutter={4}>
+            <DropdownMenu.Trigger
+              title="More"
+              class="size-6 grid place-items-center rounded-lg btn-ghost"
+            >
+              <DotsThreeVerticalIcon size={13} weight="bold" />
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content class="menu-surface">
+                <DropdownMenu.Item
+                  onSelect={() => props.onEdit(props.group.id)}
+                  class="menu-item"
+                >
+                  <PencilSimpleIcon
+                    size={12}
+                    weight="bold"
+                    class="text-[var(--color-text-dim)]"
+                  />
+                  Edit group…
+                </DropdownMenu.Item>
+                <DropdownMenu.Item
+                  onSelect={() => props.onDelete(props.group.id)}
+                  class="menu-item menu-item-danger"
+                >
+                  <TrashIcon size={12} weight="bold" />
+                  Delete group…
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu>
+        </div>
+      </div>
+
+      <Show when={!props.group.collapsed && members().length > 0}>
+        <ul class="mt-0.5 mb-1">
+          <For each={members()}>
+            {(svc) => {
+              const rowId = () => memberRowId(props.group.id, svc.id);
+              let row!: HTMLLIElement;
+              return (
+                <li
+                  ref={row}
+                  draggable={true}
+                  onDragStart={(e) => {
+                    e.stopPropagation();
+                    startDrag(e, svc.id);
+                    beginDrag({
+                      kind: "member",
+                      groupId: props.group.id,
+                      serviceId: svc.id,
+                    });
+                  }}
+                  onDragEnd={endDrag}
+                  onDragOver={(e) => {
+                    e.stopPropagation();
+                    const item = dragItem();
+                    if (item?.kind !== "member" || item.groupId !== props.group.id) return;
+                    acceptDrop(e);
+                    hoverDrop(rowId(), edgeFromEvent(e, row));
+                  }}
+                  onDragLeave={() => clearDrop(rowId())}
+                  onDrop={(e) => {
+                    e.stopPropagation();
+                    const item = dragItem();
+                    if (item?.kind === "member" && item.groupId === props.group.id) {
+                      e.preventDefault();
+                      moveGroupMember(
+                        props.group.id,
+                        item.serviceId,
+                        svc.id,
+                        edgeFromEvent(e, row),
+                      );
+                    }
+                    endDrag();
+                  }}
+                  class={`pane-row draggable-row group/mem flex items-center pr-1 gap-0.5 rounded-lg transition-colors hover:bg-[var(--color-bg-3)] ${dropClass(rowId())}`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => selectService(svc.id)}
+                    title="Open focused"
+                    class="flex-1 py-1 text-left text-[12px] flex items-center gap-2 min-w-0 text-[var(--color-text-dim)] hover:text-[var(--color-text)] transition-colors"
+                  >
+                    <span
+                      class={statusDotClass(serviceStatus(svc))}
+                      style={{ width: "6px", height: "6px" }}
+                    />
+                    <span class="truncate">{svc.name}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeServiceFromGroup(props.group.id, svc.id);
+                    }}
+                    title="Remove from group"
+                    class="size-6 grid place-items-center rounded-lg btn-ghost opacity-0 group-hover/mem:opacity-100 transition-opacity"
+                  >
+                    <XIcon size={11} weight="bold" />
+                  </button>
+
+                  <RunToggle
+                    status={serviceStatus(svc)}
+                    onStart={() => startService(svc.id)}
+                    onStop={() => stopService(svc.id)}
+                  />
+                </li>
+              );
+            }}
+          </For>
+        </ul>
+      </Show>
+    </div>
+  );
+}
+
+// ── Drag-to-resize handle on the sidebar's right edge ──────────────────────
+
+function SidebarResizer() {
+  function onPointerDown(e: PointerEvent) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = uiStore.sidebarWidth;
+
+    const move = (ev: PointerEvent) => setSidebarWidth(startWidth + (ev.clientX - startX));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      commitSidebarWidth();
+    };
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      title="Drag to resize · double-click to reset"
+      onPointerDown={onPointerDown}
+      onDblClick={() => {
+        setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
+        commitSidebarWidth();
+      }}
+      class="sidebar-resizer"
+    />
   );
 }
 
@@ -156,9 +560,11 @@ function GroupRunControls(props: { appId: string; services: Service[] }) {
 export function Sidebar() {
   const [appDialog, setAppDialog] = createSignal<AppDialogTarget>(null);
   const [serviceDialog, setServiceDialog] = createSignal<ServiceDialogTarget>(null);
+  const [groupDialog, setGroupDialog] = createSignal<GroupDialogTarget>(null);
 
   const [deleteServiceId, setDeleteServiceId] = createSignal<string | null>(null);
   const [deleteAppId, setDeleteAppId] = createSignal<string | null>(null);
+  const [deleteGroupId, setDeleteGroupId] = createSignal<string | null>(null);
 
   const deleteServiceCandidate = createMemo(() => {
     const id = deleteServiceId();
@@ -169,34 +575,38 @@ export function Sidebar() {
     return id ? findApp(id) : undefined;
   });
 
-  return (
-    <aside class="w-64 shrink-0 border-r border-[var(--color-border)] sidebar-bg flex flex-col">
-      <div class="px-4 h-12 border-b border-[var(--color-border)] flex items-center justify-between">
-        <div class="flex items-center gap-2">
-          <div class="size-6 rounded-md bg-gradient-to-br from-[var(--color-accent)] to-[#5b21b6] grid place-items-center shadow-[0_0_12px_var(--color-accent-glow)]">
-            <StackIcon size={13} weight="fill" class="text-white" />
-          </div>
-          <span class="font-semibold tracking-tight text-[15px]">Dashy</span>
-        </div>
-        <button
-          type="button"
-          onClick={() => setAppDialog({ kind: "add" })}
-          title="New app"
-          class="size-7 grid place-items-center rounded-md btn-ghost"
-        >
-          <PlusIcon size={14} weight="bold" />
-        </button>
-      </div>
-
+  // Dialogs stay mounted even when the sidebar is hidden, otherwise
+  // collapsing mid-edit would silently drop the open dialog.
+  const dialogs = (
+    <>
       <AppDialog target={appDialog()} onClose={() => setAppDialog(null)} />
       <ServiceDialog target={serviceDialog()} onClose={() => setServiceDialog(null)} />
+      <GroupDialog target={groupDialog()} onClose={() => setGroupDialog(null)} />
+
+      <ConfirmDialog
+        open={deleteGroupId() !== null}
+        title="Delete group?"
+        description={
+          deleteGroupId()
+            ? `"${findGroup(deleteGroupId()!)?.name}" will be removed. The services stay where they are — only the grouping is deleted.`
+            : ""
+        }
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => {
+          const id = deleteGroupId();
+          if (id) deleteGroupAction(id);
+          setDeleteGroupId(null);
+        }}
+        onCancel={() => setDeleteGroupId(null)}
+      />
 
       <ConfirmDialog
         open={deleteServiceId() !== null}
         title="Delete service?"
         description={
           deleteServiceCandidate()
-            ? `"${deleteServiceCandidate()?.name}" will be removed. If it's running, the process will be killed first. This can't be undone.`
+            ? `"${deleteServiceCandidate()?.name}" will be removed. Its terminals will be killed first. This can't be undone.`
             : ""
         }
         confirmLabel="Delete"
@@ -226,159 +636,358 @@ export function Sidebar() {
         }}
         onCancel={() => setDeleteAppId(null)}
       />
+    </>
+  );
 
-      <div class="flex-1 overflow-y-auto py-3">
-        <Show when={appsStore.loaded && appsStore.apps.length === 0}>
-          <div class="px-4 py-12 text-center">
-            <div class="size-10 rounded-xl bg-[var(--color-bg-3)] grid place-items-center mx-auto mb-3 border border-[var(--color-border)]">
-              <StackIcon size={18} weight="duotone" class="text-[var(--color-text-dim)]" />
+  return (
+    <>
+      {dialogs}
+      <Show when={!uiStore.sidebarCollapsed}>
+        <aside
+          style={{
+            width: `${uiStore.sidebarWidth}px`,
+            "min-width": `${SIDEBAR_MIN_WIDTH}px`,
+          }}
+          class="relative shrink-0 flex flex-col panel glass mr-2"
+        >
+          <div class="flex-1 overflow-y-auto overflow-x-hidden py-2.5">
+            <div class="section-head">
+              <span>Groups</span>
+              <button
+                type="button"
+                onClick={() => setGroupDialog({ kind: "add" })}
+                title="New group"
+                class="size-6 grid place-items-center rounded-lg btn-ghost"
+              >
+                <PlusIcon size={12} weight="bold" />
+              </button>
             </div>
-            <p class="text-xs text-[var(--color-text-dim)] mb-3">No apps yet</p>
-            <button
-              type="button"
-              onClick={() => setAppDialog({ kind: "add" })}
-              class="text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-hover)]"
-            >
-              Create your first app →
-            </button>
-          </div>
-        </Show>
 
-        <For each={appsStore.apps}>
-          {(app) => (
-            <div class="mb-1">
-              <div class="flex items-center px-2 group/group gap-0.5">
-                <button
-                  type="button"
-                  onClick={() => toggleAppCollapsed(app.id)}
-                  class="flex-1 px-1.5 py-1 text-left text-[10.5px] uppercase tracking-[0.08em] font-semibold text-[var(--color-text-dim)] hover:text-[var(--color-text)] flex items-center gap-1.5 min-w-0 transition-colors"
-                >
-                  <Show
-                    when={app.collapsed}
-                    fallback={<CaretDownIcon size={9} weight="bold" />}
-                  >
-                    <CaretRightIcon size={9} weight="bold" />
-                  </Show>
-                  <span class="truncate">{app.name}</span>
-                </button>
-
-                <div class="flex items-center gap-0.5 opacity-0 group-hover/group:opacity-100 transition-opacity">
-                  <GroupRunControls appId={app.id} services={app.services} />
+            <div class="px-1.5 mb-3">
+              <Show
+                when={appsStore.groups.length > 0}
+                fallback={
                   <button
                     type="button"
-                    onClick={() => setServiceDialog({ kind: "add", appId: app.id })}
-                    title="Add service"
-                    class="size-6 grid place-items-center rounded-md btn-ghost"
+                    onClick={() => setGroupDialog({ kind: "add" })}
+                    class="w-full px-2.5 py-2 text-left text-[11.5px] text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)] rounded-lg hover:bg-[var(--color-bg-3)] transition-colors flex items-center gap-2"
                   >
-                    <PlusIcon size={11} weight="bold" />
+                    <SquaresFourIcon size={13} weight="duotone" />
+                    Run several services side by side
                   </button>
-
-                  <DropdownMenu placement="bottom-end" gutter={4}>
-                    <DropdownMenu.Trigger
-                      title="More"
-                      class="size-6 grid place-items-center rounded-md btn-ghost"
-                    >
-                      <DotsThreeVerticalIcon size={13} weight="bold" />
-                    </DropdownMenu.Trigger>
-                    <DropdownMenu.Portal>
-                      <DropdownMenu.Content class="z-50 min-w-[160px] rounded-lg border border-[var(--color-border-strong)] bg-[var(--color-bg-2)] p-1 shadow-2xl text-sm">
-                        <DropdownMenu.Item
-                          onSelect={() => setAppDialog({ kind: "edit", appId: app.id })}
-                          class="px-2.5 py-1.5 rounded-md cursor-default outline-none flex items-center gap-2 data-[highlighted]:bg-[var(--color-bg-3)]"
-                        >
-                          <PencilSimpleIcon size={12} weight="bold" class="text-[var(--color-text-dim)]" />
-                          Rename…
-                        </DropdownMenu.Item>
-                        <DropdownMenu.Item
-                          onSelect={() => setDeleteAppId(app.id)}
-                          class="px-2.5 py-1.5 rounded-md cursor-default outline-none flex items-center gap-2 text-[var(--color-danger)] data-[highlighted]:bg-[rgba(239,68,68,0.1)]"
-                        >
-                          <TrashIcon size={12} weight="bold" />
-                          Delete app…
-                        </DropdownMenu.Item>
-                      </DropdownMenu.Content>
-                    </DropdownMenu.Portal>
-                  </DropdownMenu>
-                </div>
-              </div>
-
-              <Show when={!app.collapsed}>
-                <Show
-                  when={app.services.length > 0}
-                  fallback={
-                    <button
-                      type="button"
-                      onClick={() => setServiceDialog({ kind: "add", appId: app.id })}
-                      class="mx-2 mt-1 w-[calc(100%-1rem)] px-3 py-1.5 text-left text-xs text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)] italic rounded-md hover:bg-[var(--color-bg-3)] transition-colors"
-                    >
-                      no services — click to add
-                    </button>
-                  }
-                >
-                  <ul class="px-1 mt-0.5">
-                    <For each={app.services}>
-                      {(svc) => {
-                        const isActive = () => appsStore.selectedServiceId === svc.id;
-                        return (
-                          <li
-                            class={`flex items-center pr-1 group/item gap-0.5 rounded-md transition-colors ${
-                              isActive() ? "sidebar-item-active" : "hover:bg-[var(--color-bg-3)]"
-                            }`}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => selectService(svc.id)}
-                              class={`flex-1 pl-3 py-1.5 text-left text-[13px] flex items-center gap-2.5 min-w-0 transition-colors ${
-                                isActive()
-                                  ? "text-[var(--color-text)]"
-                                  : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
-                              }`}
-                            >
-                              <span class={statusDotClass(svc.status)} />
-                              <span class="truncate font-medium">{svc.name}</span>
-                            </button>
-
-                            <ServiceRunButton service={svc} />
-
-                            <div class="opacity-0 group-hover/item:opacity-100 transition-opacity">
-                              <DropdownMenu placement="bottom-end" gutter={4}>
-                                <DropdownMenu.Trigger
-                                  class="size-6 grid place-items-center rounded-md btn-ghost"
-                                  title="More"
-                                >
-                                  <DotsThreeVerticalIcon size={13} weight="bold" />
-                                </DropdownMenu.Trigger>
-                                <DropdownMenu.Portal>
-                                  <DropdownMenu.Content class="z-50 min-w-[140px] rounded-lg border border-[var(--color-border-strong)] bg-[var(--color-bg-2)] p-1 shadow-2xl text-sm">
-                                    <DropdownMenu.Item
-                                      onSelect={() => setServiceDialog({ kind: "edit", serviceId: svc.id })}
-                                      class="px-2.5 py-1.5 rounded-md cursor-default outline-none flex items-center gap-2 data-[highlighted]:bg-[var(--color-bg-3)]"
-                                    >
-                                      <PencilSimpleIcon size={12} weight="bold" class="text-[var(--color-text-dim)]" />
-                                      Edit…
-                                    </DropdownMenu.Item>
-                                    <DropdownMenu.Item
-                                      onSelect={() => setDeleteServiceId(svc.id)}
-                                      class="px-2.5 py-1.5 rounded-md cursor-default outline-none flex items-center gap-2 text-[var(--color-danger)] data-[highlighted]:bg-[rgba(239,68,68,0.1)]"
-                                    >
-                                      <TrashIcon size={12} weight="bold" />
-                                      Delete
-                                    </DropdownMenu.Item>
-                                  </DropdownMenu.Content>
-                                </DropdownMenu.Portal>
-                              </DropdownMenu>
-                            </div>
-                          </li>
-                        );
-                      }}
-                    </For>
-                  </ul>
-                </Show>
+                }
+              >
+                <For each={appsStore.groups}>
+                  {(group) => (
+                    <GroupRows
+                      group={group}
+                      onEdit={(id) => setGroupDialog({ kind: "edit", groupId: id })}
+                      onDelete={(id) => setDeleteGroupId(id)}
+                    />
+                  )}
+                </For>
               </Show>
             </div>
-          )}
-        </For>
-      </div>
-    </aside>
+
+            <div class="section-head">
+              <span>Apps</span>
+              <button
+                type="button"
+                onClick={() => setAppDialog({ kind: "add" })}
+                title="New app"
+                class="size-6 grid place-items-center rounded-lg btn-ghost"
+              >
+                <PlusIcon size={12} weight="bold" />
+              </button>
+            </div>
+
+            <Show when={appsStore.loaded && appsStore.apps.length === 0}>
+              <div class="px-4 py-12 text-center">
+                <div class="size-11 rounded-2xl glass-raised grid place-items-center mx-auto mb-3">
+                  <StackIcon size={18} weight="duotone" class="text-[var(--color-text-dim)]" />
+                </div>
+                <p class="text-xs text-[var(--color-text-dim)] mb-3">No apps yet</p>
+                <button
+                  type="button"
+                  onClick={() => setAppDialog({ kind: "add" })}
+                  class="text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-hover)]"
+                >
+                  Create your first app →
+                </button>
+              </div>
+            </Show>
+
+            <For each={appsStore.apps}>
+              {(app) => {
+                let appRow!: HTMLDivElement;
+                return (
+                  <div class="mb-1.5">
+                    <div
+                      ref={appRow}
+                      draggable={true}
+                      onDragStart={(e) => {
+                        startDrag(e, app.id);
+                        beginDrag({ kind: "app", appId: app.id });
+                      }}
+                      onDragEnd={endDrag}
+                      onDragOver={(e) => {
+                        const item = dragItem();
+                        if (item?.kind === "app") {
+                          acceptDrop(e);
+                          hoverDrop(app.id, edgeFromEvent(e, appRow));
+                        } else if (item?.kind === "service") {
+                          // Dropping a service on a header moves it into
+                          // that app, at the end.
+                          acceptDrop(e);
+                          hoverDrop(app.id, "after");
+                        }
+                      }}
+                      onDragLeave={() => clearDrop(app.id)}
+                      onDrop={(e) => {
+                        const item = dragItem();
+                        if (item?.kind === "app") {
+                          e.preventDefault();
+                          moveApp(item.appId, app.id, edgeFromEvent(e, appRow));
+                        } else if (item?.kind === "service") {
+                          e.preventDefault();
+                          moveService(item.serviceId, app.id, null, "after");
+                        }
+                        endDrag();
+                      }}
+                      class={`flex items-center px-2 group/group gap-0.5 draggable-row rounded-lg ${dropClass(app.id)}`}
+                    >
+                      <DotsSixVerticalIcon
+                        size={11}
+                        weight="bold"
+                        class="shrink-0 text-[var(--color-text-faint)] opacity-0 group-hover/group:opacity-100 transition-opacity"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => toggleAppCollapsed(app.id)}
+                        class="flex-1 px-1 py-1 text-left text-[10.5px] uppercase tracking-[0.09em] font-semibold text-[var(--color-text-dim)] hover:text-[var(--color-text)] flex items-center gap-1.5 min-w-0 transition-colors"
+                      >
+                        <Show
+                          when={app.collapsed}
+                          fallback={<CaretDownIcon size={9} weight="bold" />}
+                        >
+                          <CaretRightIcon size={9} weight="bold" />
+                        </Show>
+                        <span class="truncate">{app.name}</span>
+                      </button>
+
+                      <div class="flex items-center gap-0.5 opacity-0 group-hover/group:opacity-100 transition-opacity">
+                        <GroupRunControls appId={app.id} services={app.services} />
+                        <button
+                          type="button"
+                          onClick={() => setServiceDialog({ kind: "add", appId: app.id })}
+                          title="Add service"
+                          class="size-6 grid place-items-center rounded-lg btn-ghost"
+                        >
+                          <PlusIcon size={11} weight="bold" />
+                        </button>
+
+                        <DropdownMenu placement="bottom-end" gutter={4}>
+                          <DropdownMenu.Trigger
+                            title="More"
+                            class="size-6 grid place-items-center rounded-lg btn-ghost"
+                          >
+                            <DotsThreeVerticalIcon size={13} weight="bold" />
+                          </DropdownMenu.Trigger>
+                          <DropdownMenu.Portal>
+                            <DropdownMenu.Content class="menu-surface">
+                              <DropdownMenu.Item
+                                onSelect={() => setAppDialog({ kind: "edit", appId: app.id })}
+                                class="menu-item"
+                              >
+                                <PencilSimpleIcon
+                                  size={12}
+                                  weight="bold"
+                                  class="text-[var(--color-text-dim)]"
+                                />
+                                Rename…
+                              </DropdownMenu.Item>
+                              <DropdownMenu.Item
+                                onSelect={() => setDeleteAppId(app.id)}
+                                class="menu-item menu-item-danger"
+                              >
+                                <TrashIcon size={12} weight="bold" />
+                                Delete app…
+                              </DropdownMenu.Item>
+                            </DropdownMenu.Content>
+                          </DropdownMenu.Portal>
+                        </DropdownMenu>
+                      </div>
+                    </div>
+
+                    <Show when={!app.collapsed}>
+                      <Show
+                        when={app.services.length > 0}
+                        fallback={
+                          <button
+                            type="button"
+                            onClick={() => setServiceDialog({ kind: "add", appId: app.id })}
+                            class="mx-2 mt-1 w-[calc(100%-1rem)] px-3 py-1.5 text-left text-xs text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)] italic rounded-lg hover:bg-[var(--color-bg-3)] transition-colors"
+                          >
+                            no services — click to add
+                          </button>
+                        }
+                      >
+                        <ul class="px-1.5 mt-0.5">
+                          <For each={app.services}>
+                            {(svc) => {
+                              const isActive = () => appsStore.selectedServiceId === svc.id;
+                              const status = () => serviceStatus(svc);
+                              const isSplit = () => svc.panes.length > 1;
+                              let svcRow!: HTMLDivElement;
+
+                              return (
+                                <li>
+                                  <div
+                                    ref={svcRow}
+                                    draggable={true}
+                                    onDragStart={(e) => {
+                                      e.stopPropagation();
+                                      startDrag(e, svc.id);
+                                      beginDrag({ kind: "service", serviceId: svc.id });
+                                    }}
+                                    onDragEnd={endDrag}
+                                    onDragOver={(e) => {
+                                      e.stopPropagation();
+                                      if (dragItem()?.kind !== "service") return;
+                                      acceptDrop(e);
+                                      hoverDrop(svc.id, edgeFromEvent(e, svcRow));
+                                    }}
+                                    onDragLeave={() => clearDrop(svc.id)}
+                                    onDrop={(e) => {
+                                      e.stopPropagation();
+                                      const item = dragItem();
+                                      if (item?.kind === "service") {
+                                        e.preventDefault();
+                                        moveService(
+                                          item.serviceId,
+                                          app.id,
+                                          svc.id,
+                                          edgeFromEvent(e, svcRow),
+                                        );
+                                      }
+                                      endDrag();
+                                    }}
+                                    class={`flex items-center pr-1 group/item gap-0.5 rounded-lg transition-colors draggable-row ${dropClass(svc.id)} ${
+                                      isActive() && !isSplit()
+                                        ? "sidebar-item-active"
+                                        : "hover:bg-[var(--color-bg-3)]"
+                                    }`}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => selectService(svc.id)}
+                                      class={`flex-1 pl-2.5 py-1.5 text-left text-[13px] flex items-center gap-2.5 min-w-0 transition-colors ${
+                                        isActive()
+                                          ? "text-[var(--color-text)]"
+                                          : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+                                      }`}
+                                    >
+                                      <span class={statusDotClass(status())} />
+                                      <span class="truncate font-medium">{svc.name}</span>
+                                      <Show when={isSplit()}>
+                                        <span class="pane-count shrink-0">
+                                          {svc.panes.length}
+                                        </span>
+                                      </Show>
+                                    </button>
+
+                                    <div class="flex items-center opacity-0 group-hover/item:opacity-100 transition-opacity">
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          selectService(svc.id);
+                                          addPane(svc.id);
+                                        }}
+                                        title="Split terminal"
+                                        class="size-6 grid place-items-center rounded-lg btn-ghost"
+                                      >
+                                        <ColumnsPlusRightIcon size={12} weight="bold" />
+                                      </button>
+
+                                      <DropdownMenu placement="bottom-end" gutter={4}>
+                                        <DropdownMenu.Trigger
+                                          class="size-6 grid place-items-center rounded-lg btn-ghost"
+                                          title="More"
+                                        >
+                                          <DotsThreeVerticalIcon size={13} weight="bold" />
+                                        </DropdownMenu.Trigger>
+                                        <DropdownMenu.Portal>
+                                          <DropdownMenu.Content class="menu-surface">
+                                            <DropdownMenu.Item
+                                              onSelect={() =>
+                                                setServiceDialog({
+                                                  kind: "edit",
+                                                  serviceId: svc.id,
+                                                })
+                                              }
+                                              class="menu-item"
+                                            >
+                                              <PencilSimpleIcon
+                                                size={12}
+                                                weight="bold"
+                                                class="text-[var(--color-text-dim)]"
+                                              />
+                                              Edit…
+                                            </DropdownMenu.Item>
+                                            <DropdownMenu.Item
+                                              onSelect={() => {
+                                                selectService(svc.id);
+                                                addPane(svc.id);
+                                              }}
+                                              class="menu-item"
+                                            >
+                                              <ColumnsPlusRightIcon
+                                                size={12}
+                                                weight="bold"
+                                                class="text-[var(--color-text-dim)]"
+                                              />
+                                              Split terminal
+                                            </DropdownMenu.Item>
+                                            <DropdownMenu.Item
+                                              onSelect={() => setDeleteServiceId(svc.id)}
+                                              class="menu-item menu-item-danger"
+                                            >
+                                              <TrashIcon size={12} weight="bold" />
+                                              Delete
+                                            </DropdownMenu.Item>
+                                          </DropdownMenu.Content>
+                                        </DropdownMenu.Portal>
+                                      </DropdownMenu>
+                                    </div>
+
+                                    <RunToggle
+                                      status={status()}
+                                      size={12}
+                                      onStart={() => startService(svc.id)}
+                                      onStop={() => stopService(svc.id)}
+                                    />
+                                  </div>
+
+                                  <Show when={isSplit()}>
+                                    <PaneRows service={svc} />
+                                  </Show>
+                                </li>
+                              );
+                            }}
+                          </For>
+                        </ul>
+                      </Show>
+                    </Show>
+                  </div>
+                );
+              }}
+            </For>
+          </div>
+
+          <SidebarResizer />
+        </aside>
+      </Show>
+    </>
   );
 }

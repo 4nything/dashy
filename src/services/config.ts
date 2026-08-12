@@ -16,8 +16,16 @@ export interface PersistedApp {
   collapsed: boolean;
 }
 
+export interface PersistedGroup {
+  id: string;
+  name: string;
+  serviceIds: string[];
+  collapsed: boolean;
+}
+
 export interface PersistedConfig {
   apps: PersistedApp[];
+  groups: PersistedGroup[];
 }
 
 export function configLoad(): Promise<PersistedConfig> {

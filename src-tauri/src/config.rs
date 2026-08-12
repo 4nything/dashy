@@ -19,6 +19,21 @@ use tauri::{AppHandle, Manager};
 pub struct PersistedConfig {
     #[serde(default)]
     pub apps: Vec<PersistedApp>,
+    /// Hand-picked sets of services the user wants to run and watch side by
+    /// side. Independent of the app tree — a group can pull services from
+    /// anywhere.
+    #[serde(default)]
+    pub groups: Vec<PersistedGroup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedGroup {
+    pub id: String,
+    pub name: String,
+    #[serde(default, rename = "serviceIds")]
+    pub service_ids: Vec<String>,
+    #[serde(default)]
+    pub collapsed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
