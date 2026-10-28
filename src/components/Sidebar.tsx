@@ -234,6 +234,7 @@ function PaneRows(props: { service: Service }) {
             >
               <button
                 type="button"
+                draggable={true}
                 onClick={() => focus(pane.id)}
                 class={`flex-1 py-1 text-left text-[12px] flex items-center gap-2 min-w-0 transition-colors ${
                   isActive()
@@ -359,6 +360,7 @@ function GroupRows(props: {
 
         <button
           type="button"
+          draggable={true}
           onClick={() => selectGroup(props.group.id)}
           class={`flex-1 py-1.5 text-left text-[13px] flex items-center gap-2 min-w-0 transition-colors ${
             isActive()
@@ -478,6 +480,7 @@ function GroupRows(props: {
                 >
                   <button
                     type="button"
+                    draggable={true}
                     onClick={() => selectService(svc.id)}
                     title="Open focused"
                     class="flex-1 py-1 text-left text-[12px] flex items-center gap-2 min-w-0 text-[var(--color-text-dim)] hover:text-[var(--color-text)] transition-colors"
@@ -757,6 +760,7 @@ export function Sidebar() {
                     >
                       <button
                         type="button"
+                        draggable={true}
                         onClick={() => toggleAppCollapsed(app.id)}
                         class="flex-1 px-1 py-1 text-left text-[10.5px] uppercase tracking-[0.09em] font-semibold text-[var(--color-text-dim)] hover:text-[var(--color-text)] flex items-center gap-1.5 min-w-0 transition-colors"
                       >
@@ -874,6 +878,7 @@ export function Sidebar() {
                                   >
                                     <button
                                       type="button"
+                                      draggable={true}
                                       onClick={() => selectService(svc.id)}
                                       class={`flex-1 pl-2.5 py-1.5 text-left text-[13px] flex items-center gap-2.5 min-w-0 transition-colors ${
                                         isActive()
