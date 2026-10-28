@@ -584,6 +584,32 @@ export function getShellPtyId(paneId: string): string | null {
   return cache.get(paneId)?.shellPtyId ?? null;
 }
 
+/**
+ * Forget the pane's shell while keeping its terminal — scrollback, size and
+ * all. Used after a shell is force-killed: dropping the exit listener here
+ * is deliberate, since the kill *is* the exit and we already know what it
+ * means. It also clears the binding synchronously, so the next ensureShell
+ * opens a fresh shell instead of returning the dead pty id it would still
+ * be holding while the exit event made its way across the IPC boundary.
+ */
+export function clearPaneShell(paneId: string): void {
+  const entry = cache.get(paneId);
+  if (!entry) return;
+  entry.unlistenData?.();
+  entry.unlistenExit?.();
+  entry.unlistenData = undefined;
+  entry.unlistenExit = undefined;
+  entry.resizeDisposer?.dispose();
+  entry.resizeDisposer = undefined;
+  entry.shellPtyId = null;
+  entry.spawning = false;
+  entry.activity = "idle";
+  entry.stopDeadline = 0;
+  entry.pendingInput = "";
+  entry.tail = "";
+  resolveIdleWaiters(entry);
+}
+
 export function disposePaneTerminal(paneId: string): void {
   const entry = cache.get(paneId);
   if (!entry) return;

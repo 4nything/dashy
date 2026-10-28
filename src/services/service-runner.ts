@@ -25,6 +25,7 @@ import type { Service } from "../types";
 import { ptyKill } from "./pty";
 import {
   beginStopWindow,
+  clearPaneShell,
   disposePaneTerminal,
   ensureShell,
   getActivity,
@@ -170,12 +171,30 @@ export async function stopPane(paneId: string): Promise<boolean> {
     return false;
   }
 
-  const settled = await waitForIdle(paneId);
-  if (!settled) {
-    // Never came back to a prompt — don't leave the UI stuck on "Stopping".
-    setPaneStatus(paneId, getActivity(paneId) === "busy" ? "running" : "stopped");
+  if (await waitForIdle(paneId)) return true;
+
+  // Ctrl+C didn't bring the prompt back, and plenty of things on Windows
+  // never let it: `cargo run` and other wrappers hand their child its own
+  // process group, so the console's Ctrl+C never reaches the process that
+  // actually holds the port. Stop has to mean stop, so escalate to killing
+  // the shell and everything under it. The terminal keeps its scrollback and
+  // opens a fresh shell the next time the pane is used.
+  const ptyId = getShellPtyId(paneId);
+  if (!ptyId) {
+    setPaneStatus(paneId, "stopped");
+    return true;
   }
-  return settled;
+  try {
+    await ptyKill(ptyId);
+  } catch (e) {
+    console.error("force kill failed:", e);
+    setPaneStatus(paneId, getActivity(paneId) === "busy" ? "running" : "stopped");
+    return false;
+  }
+  clearPaneShell(paneId);
+  setPanePtyId(paneId, null);
+  setPaneStatus(paneId, "stopped");
+  return true;
 }
 
 /**
@@ -188,12 +207,12 @@ export async function restartPane(paneId: string): Promise<void> {
   const cmdLine = (found.pane.lastCommand ?? serviceCommandLine(found.service)).trim();
   if (!cmdLine) return;
 
-  await ensurePaneShell(paneId);
-
   if (getActivity(paneId) === "busy") {
     const settled = await stopPane(paneId);
     if (!settled) return; // couldn't get a prompt back; don't pile on
   }
+
+  await ensurePaneShell(paneId);
 
   setPaneStatus(paneId, "starting");
   setPaneLastCommand(paneId, cmdLine);
