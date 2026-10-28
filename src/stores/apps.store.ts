@@ -1,6 +1,7 @@
 import { createStore, produce } from "solid-js/store";
 import type {
   AppGroup,
+  SavedCommand,
   Service,
   ServiceStatus,
   TerminalGroup,
@@ -47,6 +48,7 @@ function hydrateService(s: PersistedService): Service {
     args: s.args ?? [],
     cwd: s.cwd,
     env: s.env ?? {},
+    savedCommands: s.savedCommands ?? [],
     panes: [],
     activePaneId: null,
   };
@@ -69,6 +71,7 @@ function stripService(s: Service): PersistedService {
     args: s.args,
     cwd: s.cwd,
     env: s.env,
+    savedCommands: s.savedCommands.map((c) => ({ ...c })),
   };
 }
 
@@ -377,7 +380,15 @@ export function deleteApp(appId: string) {
 // `env` is still on the model (and still persisted) but no longer edited in
 // the UI — projects here carry a .env file instead. Editing a service leaves
 // whatever was already stored untouched.
-export type ServiceDraft = Pick<Service, "name" | "command" | "args" | "cwd">;
+export type ServiceDraft = Pick<
+  Service,
+  "name" | "command" | "args" | "cwd" | "savedCommands"
+>;
+
+/** Ids are minted here so the dialog can work with plain label/command pairs. */
+export function makeSavedCommand(label: string, command: string): SavedCommand {
+  return { id: crypto.randomUUID(), label, command };
+}
 
 export function addService(appId: string, draft: ServiceDraft): string {
   const id = crypto.randomUUID();
@@ -399,6 +410,7 @@ export function updateService(serviceId: string, draft: ServiceDraft) {
     svc.command = draft.command;
     svc.args = draft.args;
     svc.cwd = draft.cwd;
+    svc.savedCommands = draft.savedCommands;
   });
   scheduleSave();
 }

@@ -2,6 +2,11 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
+  onTerminalFontChange,
+  terminalFontFamily,
+  uiStore,
+} from "../stores/ui.store";
+import {
   newPtyId,
   onPtyData,
   onPtyExit,
@@ -35,6 +40,11 @@ export interface PaneHooks {
   /** Fired when the user submits a command line by hand. */
   onCommand?: (command: string) => void;
   onExit?: (code: number) => void;
+  /**
+   * Someone typed into a pane whose shell was never opened. Wired by
+   * service-runner, which is the layer that knows the service's cwd and env.
+   */
+  onNeedShell?: () => void;
 }
 
 /**
@@ -78,6 +88,18 @@ interface PaneTerminal {
   hooks: PaneHooks;
   activity: ShellActivity;
   lastCommand: string | null;
+  /**
+   * Keystrokes typed before the shell finished coming up. Replayed once it's
+   * there, so a fast `npm run dev` into a cold pane doesn't lose its first
+   * few characters.
+   */
+  pendingInput: string;
+  /**
+   * True from the moment a spawn starts until the PTY is actually up. The
+   * pty id is assigned before the spawn round-trip finishes, so this — not
+   * shellPtyId — is what says whether input can be written yet.
+   */
+  spawning: boolean;
   /** Element currently hosting the xterm, or null while parked offscreen. */
   host: HTMLElement | null;
   /** Viewport line to restore after re-mounting; see restoreScroll(). */
@@ -108,26 +130,33 @@ function getStash(): HTMLDivElement {
     stashEl.style.height = "800px";
     stashEl.style.overflow = "hidden";
     stashEl.style.pointerEvents = "none";
+    // Parked terminals keep their DOM (scrollback + live shell survive a view
+    // switch) but stop rendering — see .terminal-stash in index.css. Offscreen
+    // is not the same as not painted: without this, every service you've ever
+    // opened goes on costing frames for the rest of the session.
+    stashEl.className = "terminal-stash";
     stashEl.setAttribute("aria-hidden", "true");
     document.body.appendChild(stashEl);
   }
   return stashEl;
 }
 
-function makeTerminal(): PaneTerminal {
+function makeTerminal(paneId: string): PaneTerminal {
   const term = new Terminal({
-    fontFamily:
-      '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace',
-    fontSize: 13,
+    fontFamily: terminalFontFamily(),
+    fontSize: uiStore.termFontSize,
     lineHeight: 1.35,
     cursorBlink: true,
     cursorStyle: "bar",
     cursorWidth: 2,
     allowProposedApi: true,
-    // Lets the frosted panel behind the terminal show through.
-    allowTransparency: true,
+    // Opaque on purpose. A translucent terminal has to be composited against
+    // everything painted behind it on every frame of output — with a few panes
+    // streaming logs that was the single biggest GPU cost in the app. The
+    // frame underneath paints --color-term-bg, the same colour.
+    allowTransparency: false,
     theme: {
-      background: "rgba(9, 11, 19, 0.62)",
+      background: "#0a0c14",
       foreground: "#e7eaf6",
       cursor: "#a78bfa",
       cursorAccent: "#0b0d15",
@@ -153,13 +182,16 @@ function makeTerminal(): PaneTerminal {
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  return {
+
+  const entry: PaneTerminal = {
     term,
     fit,
     shellPtyId: null,
     hooks: {},
     activity: "idle",
     lastCommand: null,
+    pendingInput: "",
+    spawning: false,
     host: null,
     savedViewportY: 0,
     savedAtBottom: true,
@@ -168,12 +200,40 @@ function makeTerminal(): PaneTerminal {
     tail: "",
     idleWaiters: new Set(),
   };
+
+  // Wired once for the life of the pane, deliberately not inside ensureShell:
+  // a pane with no shell still has to notice the first keystroke, because
+  // that keystroke is what opens the shell.
+  entry.inputDisposer = term.onData((data) => handleInput(entry, paneId, data));
+
+  // No shell until it's asked for, so say so — an empty black rectangle
+  // doesn't explain itself. Written into the buffer rather than overlaid, so
+  // it scrolls away above the shell's own banner like any other output.
+  term.write("\x1b[2m  Type here, or hit Start, to open a shell.\x1b[0m\r\n\r\n");
+
+  return entry;
 }
+
+/**
+ * Re-apply the user's font choice to every live pane. Writing fontFamily or
+ * fontSize makes xterm re-measure its cell grid, so each pane needs a refit
+ * afterwards or it keeps rendering on the old geometry.
+ */
+function applyFontToAll(): void {
+  const family = terminalFontFamily();
+  for (const [paneId, entry] of cache) {
+    entry.term.options.fontFamily = family;
+    entry.term.options.fontSize = uiStore.termFontSize;
+    refitPane(paneId);
+  }
+}
+
+onTerminalFontChange(applyFontToAll);
 
 export function getPaneTerminal(paneId: string): PaneTerminal {
   let entry = cache.get(paneId);
   if (!entry) {
-    entry = makeTerminal();
+    entry = makeTerminal(paneId);
     cache.set(paneId, entry);
   }
   return entry;
@@ -352,6 +412,35 @@ function handleOutput(entry: PaneTerminal, chunk: string) {
   scheduleSettle(entry);
 }
 
+/** Keystrokes held while a shell comes up; a runaway buffer helps nobody. */
+const PENDING_INPUT_LIMIT = 4096;
+
+/**
+ * Keystrokes from this pane's xterm. A pane whose shell isn't up yet asks
+ * for one and holds what was typed until it arrives — typing into a cold
+ * terminal is exactly how you open it.
+ */
+function handleInput(entry: PaneTerminal, paneId: string, data: string): void {
+  if (!entry.shellPtyId || entry.spawning) {
+    if (entry.pendingInput.length < PENDING_INPUT_LIMIT) entry.pendingInput += data;
+    entry.hooks.onNeedShell?.();
+    return;
+  }
+  // Read the command off the screen rather than accumulating keystrokes —
+  // that way history recall (↑) and clipboard pastes are captured too.
+  if (data.includes("\r")) {
+    const cmd = pendingCommand(entry);
+    if (cmd) {
+      entry.lastCommand = cmd;
+      entry.hooks.onCommand?.(cmd);
+    }
+  }
+  // A hand-typed Ctrl+C deserves the same batch-prompt handling as the
+  // Stop button, otherwise the user is back to answering Y themselves.
+  if (data.includes("\x03")) beginStopWindow(paneId);
+  ptyWrite(entry.shellPtyId, data).catch(() => {});
+}
+
 /** Everything the user typed after the prompt on the current line. */
 function pendingCommand(entry: PaneTerminal): string {
   const text = cursorLine(entry);
@@ -426,30 +515,15 @@ export async function ensureShell(
   const entry = getPaneTerminal(paneId);
   if (entry.shellPtyId) return entry.shellPtyId;
 
-  // Tear down any stale bindings before opening a new shell.
+  // Tear down any stale bindings before opening a new shell. The input
+  // handler is not one of them: it belongs to the pane, not to the shell,
+  // and it's what brings a new shell up in the first place.
   entry.unlistenData?.();
   entry.unlistenExit?.();
-  entry.inputDisposer?.dispose();
   entry.resizeDisposer?.dispose();
 
   const ptyId = newPtyId();
-
-  entry.inputDisposer = entry.term.onData((data) => {
-    if (!entry.shellPtyId) return;
-    // Read the command off the screen rather than accumulating keystrokes —
-    // that way history recall (↑) and clipboard pastes are captured too.
-    if (data.includes("\r")) {
-      const cmd = pendingCommand(entry);
-      if (cmd) {
-        entry.lastCommand = cmd;
-        entry.hooks.onCommand?.(cmd);
-      }
-    }
-    // A hand-typed Ctrl+C deserves the same batch-prompt handling as the
-    // Stop button, otherwise the user is back to answering Y themselves.
-    if (data.includes("\x03")) beginStopWindow(paneId);
-    ptyWrite(entry.shellPtyId, data).catch(() => {});
-  });
+  entry.spawning = true;
 
   entry.resizeDisposer = entry.term.onResize(({ cols, rows }) => {
     if (entry.shellPtyId) ptyResize(entry.shellPtyId, cols, rows).catch(() => {});
@@ -477,15 +551,31 @@ export async function ensureShell(
   entry.shellPtyId = ptyId;
 
   const { command, args } = shellCommand();
-  await ptySpawn({
-    ptyId,
-    command,
-    args,
-    cwd,
-    env,
-    cols: entry.term.cols || 120,
-    rows: entry.term.rows || 32,
-  });
+  try {
+    await ptySpawn({
+      ptyId,
+      command,
+      args,
+      cwd,
+      env,
+      cols: entry.term.cols || 120,
+      rows: entry.term.rows || 32,
+    });
+  } catch (e) {
+    // Don't leave the pane pointing at a shell that never opened — the next
+    // keystroke should be free to try again.
+    entry.shellPtyId = null;
+    throw e;
+  } finally {
+    entry.spawning = false;
+  }
+
+  // Replay whatever was typed while the shell was coming up.
+  if (entry.pendingInput) {
+    const buffered = entry.pendingInput;
+    entry.pendingInput = "";
+    await ptyWrite(ptyId, buffered);
+  }
 
   return ptyId;
 }

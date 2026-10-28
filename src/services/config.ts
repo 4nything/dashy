@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { SavedCommand } from "../types";
 
 export interface PersistedService {
   id: string;
@@ -7,6 +8,7 @@ export interface PersistedService {
   args: string[];
   cwd: string;
   env: Record<string, string>;
+  savedCommands: SavedCommand[];
 }
 
 export interface PersistedApp {

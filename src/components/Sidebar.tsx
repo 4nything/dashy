@@ -4,7 +4,6 @@ import { CaretDownIcon } from "@squidlab/phosphor-solid/caret-down";
 import { CaretRightIcon } from "@squidlab/phosphor-solid/caret-right";
 import { CircleNotchIcon } from "@squidlab/phosphor-solid/circle-notch";
 import { ColumnsPlusRightIcon } from "@squidlab/phosphor-solid/columns-plus-right";
-import { DotsSixVerticalIcon } from "@squidlab/phosphor-solid/dots-six-vertical";
 import { DotsThreeVerticalIcon } from "@squidlab/phosphor-solid/dots-three-vertical";
 import { PencilSimpleIcon } from "@squidlab/phosphor-solid/pencil-simple";
 import { PlayIcon } from "@squidlab/phosphor-solid/play";
@@ -756,11 +755,6 @@ export function Sidebar() {
                       }}
                       class={`flex items-center px-2 group/group gap-0.5 draggable-row rounded-lg ${dropClass(app.id)}`}
                     >
-                      <DotsSixVerticalIcon
-                        size={11}
-                        weight="bold"
-                        class="shrink-0 text-[var(--color-text-faint)] opacity-0 group-hover/group:opacity-100 transition-opacity"
-                      />
                       <button
                         type="button"
                         onClick={() => toggleAppCollapsed(app.id)}

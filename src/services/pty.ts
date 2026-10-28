@@ -43,6 +43,14 @@ export function ptyKill(ptyId: string): Promise<void> {
   return invoke("pty_kill", { ptyId });
 }
 
+/**
+ * Kill every shell the backend still tracks. Only safe to call before any
+ * pane exists — see pty_kill_all on the Rust side.
+ */
+export function ptyKillAll(): Promise<void> {
+  return invoke("pty_kill_all");
+}
+
 export function onPtyData(ptyId: string, handler: (chunk: string) => void): Promise<UnlistenFn> {
   return listen<string>(`pty:${ptyId}:data`, (e) => handler(e.payload));
 }

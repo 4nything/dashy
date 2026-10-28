@@ -25,6 +25,19 @@ export interface TerminalPane {
   flex: number;
 }
 
+/**
+ * A command the user keeps around on a service: `npm run migrate`, a build
+ * with a specific flag, the one variant they only need on Tuesdays. Running
+ * one types it into the service's active pane, exactly like Start does with
+ * the service's own command — so the status dot and Restart follow it too.
+ */
+export interface SavedCommand {
+  id: string;
+  /** Short label for the chip. Falls back to the command line when empty. */
+  label: string;
+  command: string;
+}
+
 export interface Service {
   id: string;
   name: string;
@@ -32,6 +45,7 @@ export interface Service {
   args: string[];
   cwd: string;
   env: Record<string, string>;
+  savedCommands: SavedCommand[];
   panes: TerminalPane[];
   activePaneId: string | null;
 }

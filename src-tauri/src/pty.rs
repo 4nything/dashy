@@ -35,6 +35,17 @@ impl PtyRegistry {
     }
 }
 
+/// Kill every tracked shell. Called by the frontend the moment it boots:
+/// a fresh page owns no panes, so anything still in the registry is left
+/// over from a previous page load (a dev hot-reload, a webview refresh) and
+/// is unreachable from the UI. Leaking those is how you end up with a pile
+/// of invisible cmd.exe processes.
+#[tauri::command]
+pub fn pty_kill_all(registry: State<'_, PtyRegistry>) -> Result<(), String> {
+    registry.kill_all();
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SpawnRequest {
     /// Frontend-generated UUID. Lets the JS side subscribe to

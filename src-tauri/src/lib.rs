@@ -32,6 +32,7 @@ pub fn run() {
             pty::pty_write,
             pty::pty_resize,
             pty::pty_kill,
+            pty::pty_kill_all,
             config::config_load,
             config::config_save,
         ])

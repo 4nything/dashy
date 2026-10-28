@@ -7,7 +7,7 @@ import {
   isAtBottom,
   refitPane,
 } from "../services/terminal-manager";
-import { ensurePaneShell } from "../services/service-runner";
+import { preparePane } from "../services/service-runner";
 
 interface TerminalPaneViewProps {
   paneId: string;
@@ -30,7 +30,9 @@ export function TerminalPaneView(props: TerminalPaneViewProps) {
     const id = props.paneId;
     attachPane(id, host);
 
-    ensurePaneShell(id).catch((e) => console.error("ensurePaneShell failed:", e));
+    // Wires the pane up but spawns nothing: the shell opens on the first
+    // keystroke, or when Start / Restart / a saved command runs.
+    preparePane(id);
 
     const entry = getPaneTerminal(id);
     const checkBottom = () => setAtBottom(isAtBottom(id));

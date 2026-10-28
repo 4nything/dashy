@@ -61,7 +61,7 @@ function PaneHeader(props: {
   const running = () => props.pane.status === "running";
 
   return (
-    <div class="flex items-center gap-2 px-3 h-8 shrink-0 border-b border-[var(--color-border)]">
+    <div class="flex items-center gap-2 px-3 h-8 shrink-0">
       <span class={statusDotClass(props.pane.status)} style={{ width: "6px", height: "6px" }} />
       <span
         class={`text-[11px] font-medium tracking-tight truncate ${

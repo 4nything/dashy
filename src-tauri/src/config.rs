@@ -56,6 +56,19 @@ pub struct PersistedService {
     pub cwd: String,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Extra command lines the user keeps on this service (migrations, a
+    /// build with a particular flag, ...). Defaulted so configs written by
+    /// older builds still load.
+    #[serde(default, rename = "savedCommands")]
+    pub saved_commands: Vec<SavedCommand>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedCommand {
+    pub id: String,
+    #[serde(default)]
+    pub label: String,
+    pub command: String,
 }
 
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -83,4 +96,59 @@ pub fn config_save(app: AppHandle, config: PersistedConfig) -> Result<(), String
     fs::write(&tmp, serialized).map_err(|e| e.to_string())?;
     fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A config written before saved commands existed has to keep loading —
+    /// this is the user's whole service list, so a parse error here is data
+    /// loss, not an inconvenience.
+    #[test]
+    fn loads_config_without_saved_commands() {
+        let old = r#"{
+          "apps": [{
+            "id": "a1", "name": "Talcum", "collapsed": false,
+            "services": [{
+              "id": "s1", "name": "api", "command": "npm",
+              "args": ["run", "dev"], "cwd": "C:\\proj", "env": {}
+            }]
+          }],
+          "groups": []
+        }"#;
+        let cfg: PersistedConfig = serde_json::from_str(old).expect("old config must parse");
+        let svc = &cfg.apps[0].services[0];
+        assert_eq!(svc.name, "api");
+        assert!(svc.saved_commands.is_empty());
+    }
+
+    /// And the new field has to survive a save/load cycle under the camelCase
+    /// name the frontend sends.
+    #[test]
+    fn round_trips_saved_commands() {
+        let json = r#"{
+          "apps": [{
+            "id": "a1", "name": "Talcum", "collapsed": false,
+            "services": [{
+              "id": "s1", "name": "api", "command": "npm", "args": [],
+              "cwd": "C:\\proj", "env": {},
+              "savedCommands": [
+                { "id": "c1", "label": "migrate", "command": "npm run migrate" },
+                { "id": "c2", "label": "", "command": "npm run build -- --fn=foo" }
+              ]
+            }]
+          }],
+          "groups": []
+        }"#;
+        let cfg: PersistedConfig = serde_json::from_str(json).unwrap();
+        let reparsed: PersistedConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        let cmds = &reparsed.apps[0].services[0].saved_commands;
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0].label, "migrate");
+        assert_eq!(cmds[1].command, "npm run build -- --fn=foo");
+        // Serialized under the name the frontend reads back.
+        assert!(serde_json::to_string(&cfg).unwrap().contains("savedCommands"));
+    }
 }

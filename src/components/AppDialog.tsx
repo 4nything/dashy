@@ -48,7 +48,7 @@ export function AppDialog(props: AppDialogProps) {
   return (
     <Dialog open={open()} onOpenChange={(o) => !o && close()}>
       <Dialog.Portal>
-        <Dialog.Overlay class="fixed inset-0 z-40 bg-black/55 backdrop-blur-sm" />
+        <Dialog.Overlay class="fixed inset-0 z-40 bg-black/65" />
         <div class="fixed inset-0 z-50 grid place-items-center pointer-events-none">
           <Dialog.Content class="pointer-events-auto w-[420px] surface p-5 shadow-2xl">
             <Dialog.Title class="text-base font-semibold mb-1">
@@ -67,7 +67,7 @@ export function AppDialog(props: AppDialogProps) {
                 onInput={(e) => setName(e.currentTarget.value)}
                 placeholder="e.g. Safeguard"
                 autofocus
-                class="w-full px-3 py-2 rounded-xl bg-[var(--color-bg-3)] border border-[var(--color-border-strong)] text-[13px] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-bg)] transition-colors"
+                class="w-full px-3 py-2 rounded-xl bg-[var(--color-bg-3)] text-[13px] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] transition-colors"
               />
               <div class="flex justify-end gap-2 mt-5">
                 <button

@@ -6,6 +6,7 @@ import { SidebarSimpleIcon } from "@squidlab/phosphor-solid/sidebar-simple";
 import { StackIcon } from "@squidlab/phosphor-solid/stack";
 import { XIcon } from "@squidlab/phosphor-solid/x";
 import { createSignal, onCleanup, onMount } from "solid-js";
+import { AppearanceMenu } from "./AppearanceMenu";
 import { toggleSidebar, uiStore } from "../stores/ui.store";
 
 const appWindow = getCurrentWindow();
@@ -46,6 +47,8 @@ export function TitleBar() {
       <div data-tauri-drag-region class="flex-1 h-full" />
 
       <div class="flex items-center gap-1 pr-1.5 shrink-0">
+        <AppearanceMenu />
+
         <button
           type="button"
           onClick={toggleSidebar}
@@ -55,7 +58,7 @@ export function TitleBar() {
           <SidebarSimpleIcon size={14} weight="bold" />
         </button>
 
-        <div class="w-px h-4 bg-[var(--color-border-strong)] mx-1" />
+        <div class="w-px h-4 bg-[var(--color-hairline)] mx-1" />
 
         <button
           type="button"

@@ -14,7 +14,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
   return (
     <AlertDialog open={props.open} onOpenChange={(o) => !o && props.onCancel()}>
       <AlertDialog.Portal>
-        <AlertDialog.Overlay class="fixed inset-0 z-40 bg-black/55 backdrop-blur-sm" />
+        <AlertDialog.Overlay class="fixed inset-0 z-40 bg-black/65" />
         <div class="fixed inset-0 z-50 grid place-items-center pointer-events-none">
           <AlertDialog.Content class="pointer-events-auto w-[420px] surface p-5 shadow-2xl">
             <AlertDialog.Title class="text-base font-semibold mb-1">

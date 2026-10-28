@@ -73,14 +73,13 @@ function applyActivity(paneId: string, activity: ShellActivity) {
 const START_SETTLE_MS = 1200;
 
 /**
- * Bring up (or reuse) the pane's shell and wire it to the store. Safe to
- * call repeatedly — ensureShell is idempotent.
+ * Wire a pane's terminal to the store without opening anything. Shells are
+ * spawned on demand — viewing a service used to cost it a `cmd` process per
+ * pane, for the rest of the session, whether or not you ever typed in it.
+ * After this the pane is live enough to ask for its own shell on the first
+ * keystroke (onNeedShell), which is the other half of "on demand".
  */
-export async function ensurePaneShell(paneId: string): Promise<string | null> {
-  const found = findPane(paneId);
-  if (!found) return null;
-  const { service } = found;
-
+export function preparePane(paneId: string): void {
   setPaneHooks(paneId, {
     onActivity: (activity) => applyActivity(paneId, activity),
     onCommand: (command) => setPaneLastCommand(paneId, command),
@@ -88,7 +87,24 @@ export async function ensurePaneShell(paneId: string): Promise<string | null> {
       setPanePtyId(paneId, null);
       setPaneStatus(paneId, code === 0 ? "stopped" : "crashed");
     },
+    onNeedShell: () => {
+      ensurePaneShell(paneId).catch((e) => console.error("shell spawn failed:", e));
+    },
   });
+}
+
+/**
+ * Bring up (or reuse) the pane's shell. Safe to call repeatedly —
+ * ensureShell is idempotent.
+ */
+export async function ensurePaneShell(paneId: string): Promise<string | null> {
+  const found = findPane(paneId);
+  if (!found) return null;
+  const { service } = found;
+
+  // A pane that was never viewed has no hooks yet, and Start can reach one
+  // through the sidebar.
+  preparePane(paneId);
 
   const ptyId = await ensureShell(paneId, service.cwd, service.env);
   setPanePtyId(paneId, ptyId);

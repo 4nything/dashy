@@ -4,7 +4,7 @@ import { ServicePanel } from "./components/ServicePanel";
 import { Sidebar } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
 import { addPane, appsStore, findGroup } from "./stores/apps.store";
-import { toggleSidebar } from "./stores/ui.store";
+import { initZoom, nudgeZoom, resetZoom, toggleSidebar } from "./stores/ui.store";
 
 export default function App() {
   // The main area follows the selection: a group tiles its members, a
@@ -14,11 +14,34 @@ export default function App() {
   );
 
   onMount(() => {
+    initZoom();
+
     // Capture phase: xterm has focus most of the time and would otherwise
     // swallow these before they reach the window.
     const onKey = (e: KeyboardEvent) => {
       if (!e.ctrlKey || e.altKey || e.metaKey) return;
       const key = e.key.toLowerCase();
+
+      // Text size, the same keys every editor and terminal uses. `=` is the
+      // unshifted +, and the numpad reports "Add"/"Subtract".
+      if (!e.shiftKey && (key === "=" || key === "+" || key === "add")) {
+        e.preventDefault();
+        e.stopPropagation();
+        nudgeZoom(1);
+        return;
+      }
+      if (!e.shiftKey && (key === "-" || key === "subtract")) {
+        e.preventDefault();
+        e.stopPropagation();
+        nudgeZoom(-1);
+        return;
+      }
+      if (!e.shiftKey && key === "0") {
+        e.preventDefault();
+        e.stopPropagation();
+        resetZoom();
+        return;
+      }
 
       if (!e.shiftKey && key === "b") {
         e.preventDefault();

@@ -109,7 +109,7 @@ export function GroupView(props: { group: TerminalGroup }) {
 
   return (
     <main class="flex-1 flex flex-col min-w-0 panel glass">
-      <header class="px-4 h-14 flex items-center justify-between gap-3 border-b border-[var(--color-border)] shrink-0">
+      <header class="px-4 h-14 flex items-center justify-between gap-3 shrink-0">
         <div class="min-w-0 flex items-center gap-3">
           <h1 class="text-[15px] font-semibold tracking-tight truncate">
             {props.group.name}
