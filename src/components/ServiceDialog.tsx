@@ -2,7 +2,7 @@ import { Dialog } from "@kobalte/core/dialog";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { PlusIcon } from "@squidlab/phosphor-solid/plus";
 import { TrashIcon } from "@squidlab/phosphor-solid/trash";
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { Index, Show, createEffect, createMemo, createSignal } from "solid-js";
 import {
   addService,
   findService,
@@ -79,12 +79,12 @@ export function ServiceDialog(props: ServiceDialogProps) {
     setCommands((cs) => [...cs, makeSavedCommand("", "")]);
   }
 
-  function patchCommand(id: string, patch: Partial<SavedCommand>) {
-    setCommands((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  function patchCommand(index: number, patch: Partial<SavedCommand>) {
+    setCommands((cs) => cs.map((c, i) => (i === index ? { ...c, ...patch } : c)));
   }
 
-  function removeCommand(id: string) {
-    setCommands((cs) => cs.filter((c) => c.id !== id));
+  function removeCommand(index: number) {
+    setCommands((cs) => cs.filter((_, i) => i !== index));
   }
 
   async function pickCwd() {
@@ -204,29 +204,34 @@ export function ServiceDialog(props: ServiceDialogProps) {
                   fallback={
                     <p class="text-[11px] text-[var(--color-text-faint)]">
                       Extra command lines for this service — migrations, a build
-                      with a specific flag. They show up as buttons above the
-                      terminal.
+                      with a specific flag. They show up in the dropdown next
+                      to Start.
                     </p>
                   }
                 >
                   <div class="flex flex-col gap-1.5">
-                    <For each={commands()}>
-                      {(cmd) => (
+                    <div class="flex gap-1.5 text-[10px] uppercase tracking-[0.08em] text-[var(--color-text-faint)]">
+                      <span class="w-[32%]">Name</span>
+                      <span class="flex-1">Command line to run</span>
+                      <span class="size-9 shrink-0" />
+                    </div>
+                    <Index each={commands()}>
+                      {(cmd, i) => (
                         <div class="flex gap-1.5">
                           <input
                             type="text"
-                            value={cmd.label}
+                            value={cmd().label}
                             onInput={(e) =>
-                              patchCommand(cmd.id, { label: e.currentTarget.value })
+                              patchCommand(i, { label: e.currentTarget.value })
                             }
                             placeholder="migrate"
                             class={`${inputClass} w-[32%]`}
                           />
                           <input
                             type="text"
-                            value={cmd.command}
+                            value={cmd().command}
                             onInput={(e) =>
-                              patchCommand(cmd.id, { command: e.currentTarget.value })
+                              patchCommand(i, { command: e.currentTarget.value })
                             }
                             placeholder="npm run migrate -- --env=dev"
                             spellcheck={false}
@@ -234,7 +239,7 @@ export function ServiceDialog(props: ServiceDialogProps) {
                           />
                           <button
                             type="button"
-                            onClick={() => removeCommand(cmd.id)}
+                            onClick={() => removeCommand(i)}
                             title="Remove"
                             class="btn-ghost size-9 grid place-items-center rounded-md shrink-0"
                           >
@@ -242,7 +247,7 @@ export function ServiceDialog(props: ServiceDialogProps) {
                           </button>
                         </div>
                       )}
-                    </For>
+                    </Index>
                   </div>
                 </Show>
               </div>

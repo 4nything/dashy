@@ -476,27 +476,16 @@ body {
   background: #232838;
 }
 
-/* A saved command on a service. Monospaced, because it is one. */
-.cmd-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 22px;
-  padding: 0 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-family: var(--font-mono);
-  color: var(--color-text-dim);
-  background: rgba(255, 255, 255, 0.055);
-  max-width: 260px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  transition: background 120ms ease, color 120ms ease;
+/* Start and its saved-command caret read as one control; the inset dark
+   edge is what keeps the two gradients from merging into a blob. */
+.btn-split-main {
+  border-radius: 6px 0 0 6px;
 }
-.cmd-chip:hover {
-  background: var(--color-accent-bg);
-  color: var(--color-text);
+.btn-split-caret {
+  border-radius: 0 6px 6px 0;
+  box-shadow:
+    inset 1px 0 0 rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 /* ── Group view ────────────────────────────────────────────────────────── */

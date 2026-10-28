@@ -1,4 +1,6 @@
+import { DropdownMenu } from "@kobalte/core/dropdown-menu";
 import { ArrowClockwiseIcon } from "@squidlab/phosphor-solid/arrow-clockwise";
+import { CaretDownIcon } from "@squidlab/phosphor-solid/caret-down";
 import { CircleNotchIcon } from "@squidlab/phosphor-solid/circle-notch";
 import { ColumnsPlusRightIcon } from "@squidlab/phosphor-solid/columns-plus-right";
 import { PlayIcon } from "@squidlab/phosphor-solid/play";
@@ -103,20 +105,58 @@ export function ServicePanel() {
               </div>
 
               <div class="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => startService(svc().id)}
-                  class="btn-primary px-3.5 h-8 text-[13px] rounded-xl flex items-center gap-1.5"
-                  disabled={status() === "starting" || status() === "stopping"}
-                >
-                  <Show
-                    when={status() === "starting"}
-                    fallback={<PlayIcon size={11} weight="fill" />}
+                <div class="flex items-center">
+                  <button
+                    type="button"
+                    onClick={() => startService(svc().id)}
+                    class={`btn-primary px-3.5 h-8 text-[13px] flex items-center gap-1.5 ${
+                      svc().savedCommands.length > 0 ? "btn-split-main" : "rounded-md"
+                    }`}
+                    disabled={status() === "starting" || status() === "stopping"}
                   >
-                    <CircleNotchIcon size={11} weight="bold" class="animate-spin" />
+                    <Show
+                      when={status() === "starting"}
+                      fallback={<PlayIcon size={11} weight="fill" />}
+                    >
+                      <CircleNotchIcon size={11} weight="bold" class="animate-spin" />
+                    </Show>
+                    {status() === "starting" ? "Starting…" : "Start"}
+                  </button>
+
+                  {/* Only worth a caret once there's something behind it —
+                      with no saved commands the menu would just repeat Start. */}
+                  <Show when={svc().savedCommands.length > 0}>
+                    <DropdownMenu placement="bottom-end" gutter={4}>
+                      <DropdownMenu.Trigger
+                        title="Run a saved command"
+                        class="btn-primary btn-split-caret h-8 w-6 grid place-items-center"
+                      >
+                        <CaretDownIcon size={10} weight="bold" />
+                      </DropdownMenu.Trigger>
+                      <DropdownMenu.Portal>
+                        <DropdownMenu.Content class="menu-surface max-w-[380px]">
+                          <For each={svc().savedCommands}>
+                            {(cmd) => (
+                              <DropdownMenu.Item
+                                onSelect={() => runSaved(svc().id, cmd.command)}
+                                class="menu-item flex-col !items-start gap-0"
+                              >
+                                <span class="truncate max-w-full">
+                                  {cmd.label || cmd.command}
+                                </span>
+                                <Show when={cmd.label}>
+                                  <span class="text-[10.5px] font-mono text-[var(--color-text-faint)] truncate max-w-full">
+                                    {cmd.command}
+                                  </span>
+                                </Show>
+                              </DropdownMenu.Item>
+                            )}
+                          </For>
+                        </DropdownMenu.Content>
+                      </DropdownMenu.Portal>
+                    </DropdownMenu>
                   </Show>
-                  {status() === "starting" ? "Starting…" : "Start"}
-                </button>
+                </div>
 
                 <button
                   type="button"
@@ -170,31 +210,13 @@ export function ServicePanel() {
               </div>
             </header>
 
-            <div class="px-4 pt-2.5 pb-1.5 flex flex-col gap-2">
+            <div class="px-4 pt-2.5 pb-1.5">
               <p class="text-[11px] text-[var(--color-text-faint)] font-mono truncate">
                 <span class="text-[var(--color-text-dim)]">{svc().command}</span>{" "}
                 <span>{svc().args.join(" ")}</span>
                 <span class="opacity-40 mx-2">·</span>
                 <span class="text-[var(--color-text-dim)]">{svc().cwd}</span>
               </p>
-
-              <Show when={svc().savedCommands.length > 0}>
-                <div class="flex items-center gap-1.5 flex-wrap">
-                  <For each={svc().savedCommands}>
-                    {(cmd) => (
-                      <button
-                        type="button"
-                        onClick={() => runSaved(svc().id, cmd.command)}
-                        title={cmd.command}
-                        class="cmd-chip"
-                      >
-                        <PlayIcon size={9} weight="fill" class="opacity-60" />
-                        {cmd.label || cmd.command}
-                      </button>
-                    )}
-                  </For>
-                </div>
-              </Show>
             </div>
 
             <div class="flex-1 px-4 pb-4 pt-1 overflow-hidden">
