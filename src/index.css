@@ -5,11 +5,11 @@
 
 @theme {
   /* ── Palette ────────────────────────────────────────────────────────────
-     Near-black base with a cool violet undertone. The surface tiers above
-     it are translucent white rather than solid greys — everything on top of
-     the ambient background is glass, so it picks up the glow behind it. */
-  --color-bg: #06070f;
-  --color-bg-2: #0b0d18;
+     One flat near-black, very slightly cool. The surface tiers above it stay
+     translucent white rather than solid greys, so every panel is the same
+     base plus a measured amount of light — which is the whole reason the
+     tiers stay consistent wherever they land in the window. */
+  --color-bg: #0b0c12;
   --color-bg-3: rgba(255, 255, 255, 0.05);
   --color-bg-4: rgba(255, 255, 255, 0.09);
 
@@ -72,15 +72,12 @@ body,
   overflow: hidden;
 }
 
-/* Ambient light behind the glass. Three soft blobs — violet top-left, cyan
-   top-right, indigo bottom — so the frosted panels have something to
-   refract instead of sitting on flat black. */
+/* Flat. The ambient blobs that used to live here existed to give the
+   frosted panels something to refract; with the blur gone they were just
+   coloured smudges behind opaque surfaces, and they tinted the same panel
+   differently depending on where in the window it sat. */
 body {
-  background:
-    radial-gradient(900px 620px at 10% -10%, rgba(139, 92, 246, 0.20), transparent 62%),
-    radial-gradient(780px 540px at 94% 4%, rgba(34, 211, 238, 0.13), transparent 64%),
-    radial-gradient(1000px 720px at 58% 112%, rgba(99, 102, 241, 0.14), transparent 62%),
-    var(--color-bg);
+  background: var(--color-bg);
 }
 
 /* ── Window chrome ─────────────────────────────────────────────────────────
