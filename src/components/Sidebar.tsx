@@ -95,10 +95,38 @@ function paneProcessName(pane: TerminalPane): string {
   return cmd.split(/\s+/)[0] ?? "cmd";
 }
 
-function startDrag(e: DragEvent, id: string) {
+function startDrag(e: DragEvent, id: string, row?: HTMLElement) {
   // Chromium won't initiate a drag without payload on the transfer.
   e.dataTransfer?.setData("text/plain", id);
   if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+  if (row) setRowDragImage(e, row);
+}
+
+/**
+ * Drag a picture of the whole row rather than of the label the gesture
+ * started on. The drag source is the name itself — the rows have no bare
+ * surface left to grab — so Chromium would otherwise snapshot that one
+ * button and you'd be dragging a floating word.
+ *
+ * The snapshot comes off a detached clone instead of the row itself: rows
+ * are transparent until hovered, and a transparent drag image reads as text
+ * with nothing behind it. The clone carries its own background.
+ */
+function setRowDragImage(e: DragEvent, row: HTMLElement) {
+  if (!e.dataTransfer) return;
+  const rect = row.getBoundingClientRect();
+
+  const ghost = row.cloneNode(true) as HTMLElement;
+  ghost.classList.add("drag-ghost");
+  ghost.style.width = `${rect.width}px`;
+  document.body.appendChild(ghost);
+
+  // Grab point, so the ghost stays under the cursor where the row was.
+  e.dataTransfer.setDragImage(ghost, e.clientX - rect.left, e.clientY - rect.top);
+
+  // Chromium copies the snapshot synchronously, so the node only has to
+  // outlive this tick.
+  window.setTimeout(() => ghost.remove(), 0);
 }
 
 function acceptDrop(e: DragEvent) {
@@ -208,7 +236,7 @@ function PaneRows(props: { service: Service }) {
               draggable={true}
               onDragStart={(e) => {
                 e.stopPropagation();
-                startDrag(e, pane.id);
+                startDrag(e, pane.id, row);
                 beginDrag({ kind: "pane", paneId: pane.id });
               }}
               onDragEnd={endDrag}
@@ -310,7 +338,7 @@ function GroupRows(props: {
         ref={groupRow}
         draggable={true}
         onDragStart={(e) => {
-          startDrag(e, props.group.id);
+          startDrag(e, props.group.id, groupRow);
           beginDrag({ kind: "group", groupId: props.group.id });
         }}
         onDragEnd={endDrag}
@@ -446,7 +474,7 @@ function GroupRows(props: {
                   draggable={true}
                   onDragStart={(e) => {
                     e.stopPropagation();
-                    startDrag(e, svc.id);
+                    startDrag(e, svc.id, row);
                     beginDrag({
                       kind: "member",
                       groupId: props.group.id,
@@ -728,7 +756,7 @@ export function Sidebar() {
                       ref={appRow}
                       draggable={true}
                       onDragStart={(e) => {
-                        startDrag(e, app.id);
+                        startDrag(e, app.id, appRow);
                         beginDrag({ kind: "app", appId: app.id });
                       }}
                       onDragEnd={endDrag}
@@ -845,7 +873,7 @@ export function Sidebar() {
                                     draggable={true}
                                     onDragStart={(e) => {
                                       e.stopPropagation();
-                                      startDrag(e, svc.id);
+                                      startDrag(e, svc.id, svcRow);
                                       beginDrag({ kind: "service", serviceId: svc.id });
                                     }}
                                     onDragEnd={endDrag}

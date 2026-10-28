@@ -586,6 +586,20 @@ body {
   cursor: grabbing;
 }
 
+/* Snapshot source for a dragged row. Parked offscreen so it never paints —
+   it exists only long enough for setDragImage to copy it. Opaque on purpose:
+   the row it clones is transparent, and a transparent drag image leaves you
+   dragging bare text. */
+.drag-ghost {
+  position: fixed;
+  top: -9999px;
+  left: -9999px;
+  pointer-events: none;
+  border-radius: 4px;
+  background: #1b1d27;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
+}
+
 /* Inset rather than a pseudo-element: pane rows already spend ::before and
    ::after on their tree connectors. */
 .drop-before {
