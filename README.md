@@ -4,6 +4,13 @@ A service dashboard with grouped terminals: each service has its own shell (xter
 Start/Stop/Restart buttons, and a status that follows what the shell is really doing. Tauri 2 +
 SolidJS. Windows and Linux.
 
+## Install it on Ubuntu
+
+    ./instalar.sh
+
+Libraries, Node and Rust from Ubuntu's own repositories, a release build and the `.deb` installed.
+Run it again to update.
+
 ## Run it (development)
 
     npm ci
