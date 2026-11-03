@@ -52,8 +52,54 @@ fn kill_tree(pid: Option<u32>) {
             .creation_flags(CREATE_NO_WINDOW)
             .output();
     }
-    #[cfg(not(windows))]
-    let _ = pid;
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        // Deepest first, so a parent can't start another child while its
+        // children are being taken out. SIGKILL, like taskkill's /F.
+        for p in descendants(pid).into_iter().rev() {
+            unsafe {
+                libc::kill(p, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+/// Every process under `root`, parents before children, from /proc.
+///
+/// A child that already lost its parent (daemonized, or reparented to init
+/// when the shell died) is not found; Ctrl+C and the shell's own hangup cover
+/// the ordinary dev-server case, this covers what they leave running.
+#[cfg(unix)]
+fn descendants(root: u32) -> Vec<i32> {
+    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    if let Ok(dir) = std::fs::read_dir("/proc") {
+        for entry in dir.flatten() {
+            let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else {
+                continue;
+            };
+            let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+                continue;
+            };
+            // "pid (comm) state ppid ...": comm may hold spaces and
+            // parentheses, so the fields start after the *last* ')'.
+            let Some(rest) = stat.rfind(')').map(|i| &stat[i + 1..]) else {
+                continue;
+            };
+            let ppid = rest.split_whitespace().nth(1).and_then(|f| f.parse::<i32>().ok());
+            if let Some(ppid) = ppid {
+                children.entry(ppid).or_default().push(pid);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    let mut queue = vec![root as i32];
+    while let Some(parent) = queue.pop() {
+        for &child in children.get(&parent).into_iter().flatten() {
+            found.push(child);
+            queue.push(child);
+        }
+    }
+    found
 }
 
 impl PtyRegistry {
@@ -117,7 +163,10 @@ pub fn pty_spawn(
         })
         .map_err(|e| e.to_string())?;
 
-    let mut cmd = CommandBuilder::new(&req.command);
+    // An empty command asks for the user's own shell: $SHELL, or bash. The
+    // frontend sends "cmd" on Windows and leaves this to the backend elsewhere.
+    let program = if req.command.is_empty() { default_shell() } else { req.command.clone() };
+    let mut cmd = CommandBuilder::new(&program);
     cmd.args(&req.args);
     cmd.cwd(&req.cwd);
     for (k, v) in &req.env {
@@ -202,6 +251,43 @@ pub fn pty_resize(
         .map_err(|e| e.to_string())
 }
 
+/// The shell the user logs in with, as the terminal emulators do.
+fn default_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/bin/bash".into())
+}
+
+/// Is something other than the shell holding the terminal?
+///
+/// The terminal knows which process group is in the foreground: the shell's
+/// own while it waits at a prompt, the job's while a command runs. That
+/// answers "busy?" without reading the screen for a prompt, which only
+/// works for prompts we can recognise.
+#[cfg(unix)]
+fn foreground_busy(master: &dyn MasterPty, shell_pid: Option<u32>) -> Option<bool> {
+    let shell = shell_pid? as i32;
+    let foreground = master.process_group_leader()?;
+    Some(foreground != shell)
+}
+
+#[tauri::command]
+pub fn pty_busy(registry: State<'_, PtyRegistry>, pty_id: String) -> Result<bool, String> {
+    #[cfg(unix)]
+    {
+        let sessions = registry.sessions.lock();
+        let session = sessions.get(&pty_id).ok_or("pty not found")?;
+        foreground_busy(session.master.as_ref(), session.pid)
+            .ok_or_else(|| "foreground process unknown".to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (registry, pty_id);
+        Err("pty_busy is only available on Unix".into())
+    }
+}
+
 #[tauri::command]
 pub fn pty_kill(
     registry: State<'_, PtyRegistry>,
@@ -213,4 +299,82 @@ pub fn pty_kill(
         let _ = session.child_killer.kill();
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+
+    fn alive(pid: i32) -> bool {
+        // A killed child stays a zombie until its parent reaps it.
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .map(|s| !s.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z'))
+            .unwrap_or(false)
+    }
+
+    fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if f() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    #[test]
+    fn kill_tree_takes_out_grandchildren() {
+        let mut shell = std::process::Command::new("sh")
+            .args(["-c", "sleep 300 & sleep 300 & wait"])
+            .spawn()
+            .unwrap();
+        let shell_pid = shell.id();
+        wait_until("two sleeps under the shell", || descendants(shell_pid).len() >= 2);
+        let kids = descendants(shell_pid);
+
+        kill_tree(Some(shell_pid));
+        let _ = shell.kill();
+        let _ = shell.wait();
+
+        wait_until("the grandchildren to die", || kids.iter().all(|&p| !alive(p)));
+    }
+
+    #[test]
+    fn descendants_of_a_leaf_is_empty() {
+        let mut leaf = std::process::Command::new("sleep").arg("300").spawn().unwrap();
+        assert!(descendants(leaf.id()).is_empty());
+        let _ = leaf.kill();
+        let _ = leaf.wait();
+    }
+
+    #[test]
+    fn foreground_busy_follows_the_job_not_the_prompt() {
+        let pair = native_pty_system()
+            .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+            .unwrap();
+        // --norc: the prompt is whatever it is; it must not matter.
+        let mut cmd = CommandBuilder::new("bash");
+        cmd.args(["--norc", "-i"]);
+        let mut child = pair.slave.spawn_command(cmd).unwrap();
+        let pid = child.process_id();
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let mut writer = pair.master.take_writer().unwrap();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 1024];
+            while reader.read(&mut buf).map(|n| n > 0).unwrap_or(false) {}
+        });
+
+        wait_until("bash at its prompt", || foreground_busy(pair.master.as_ref(), pid) == Some(false));
+
+        writer.write_all(b"sleep 300\n").unwrap();
+        wait_until("sleep in the foreground", || foreground_busy(pair.master.as_ref(), pid) == Some(true));
+
+        writer.write_all(&[0x03]).unwrap(); // Ctrl+C, as the Stop button sends it
+        wait_until("bash back at its prompt", || foreground_busy(pair.master.as_ref(), pid) == Some(false));
+
+        let _ = child.kill();
+    }
 }

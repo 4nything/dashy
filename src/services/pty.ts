@@ -39,6 +39,14 @@ export function ptyResize(ptyId: string, cols: number, rows: number): Promise<vo
   return invoke("pty_resize", { ptyId, cols, rows });
 }
 
+/**
+ * Is a program other than the shell in the terminal's foreground? Answered by
+ * the OS, so it works with any prompt. Not available on Windows.
+ */
+export function ptyBusy(ptyId: string): Promise<boolean> {
+  return invoke("pty_busy", { ptyId });
+}
+
 export function ptyKill(ptyId: string): Promise<void> {
   return invoke("pty_kill", { ptyId });
 }

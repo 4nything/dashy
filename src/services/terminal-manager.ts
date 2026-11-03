@@ -1,6 +1,7 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { platform } from "@tauri-apps/plugin-os";
 import {
   onTerminalFontChange,
   terminalFontFamily,
@@ -10,30 +11,34 @@ import {
   newPtyId,
   onPtyData,
   onPtyExit,
+  ptyBusy,
   ptyResize,
   ptySpawn,
   ptyWrite,
 } from "./pty";
 
-// Per-pane xterm + persistent shell. Opening a service auto-spawns a `cmd`
-// PTY rooted at its cwd; the user can type freely and clicking Start types
+// Per-pane xterm + persistent shell. Opening a service auto-spawns a shell
+// (`cmd` on Windows, the user's $SHELL elsewhere) in a PTY rooted at its cwd; the user can type freely and clicking Start types
 // the configured command into that same shell. Splitting a service adds
 // another pane, each with its own independent shell.
 //
 // Beyond plumbing bytes, this module watches the stream to answer two
 // questions the UI needs and the PTY can't tell us directly:
 //
-//   1. Is the shell busy? We can't ask cmd.exe, so we look at where the
-//      cursor is sitting once output settles. Cursor parked on a prompt =
-//      idle; anything else = a foreground process owns the terminal. That
-//      makes a hand-typed `npm run dev` light up the status dot exactly
-//      like the Start button does.
+//   1. Is the shell busy? On Windows we can't ask cmd.exe, so we look at where
+//      the cursor is sitting once output settles. Cursor parked on a prompt =
+//      idle; anything else = a foreground process owns the terminal. Elsewhere
+//      the terminal itself says which process group is in the foreground, so
+//      any prompt will do. Either way a hand-typed `npm run dev` lights up the
+//      status dot exactly like the Start button does.
 //
-//   2. Did Ctrl+C hit a batch wrapper? npm/ng/yarn are .cmd shims, so cmd
-//      answers Ctrl+C with "Terminate batch job (Y/N)?" and waits. We reply
-//      for the user instead of making them press Ctrl+C twice.
+//   2. (Windows only) Did Ctrl+C hit a batch wrapper? npm/ng/yarn are .cmd
+//      shims, so cmd answers Ctrl+C with "Terminate batch job (Y/N)?" and
+//      waits. We reply for the user instead of making them press Ctrl+C twice.
 
 export type ShellActivity = "idle" | "busy";
+
+const IS_WINDOWS = platform() === "windows";
 
 export interface PaneHooks {
   onActivity?: (activity: ShellActivity) => void;
@@ -112,6 +117,14 @@ interface PaneTerminal {
   stopDeadline: number;
   /** Rolling plain-text tail of recent output, used for prompt matching. */
   tail: string;
+  /**
+   * Outside Windows, the cursor line as it stood when the shell last came
+   * back to its prompt: everything on it is prompt, whatever the prompt looks
+   * like. Cleared when a command is submitted. Null until the next prompt.
+   */
+  promptText: string | null;
+  /** Bumped per settle, so a slow answer from the OS can't overwrite a newer one. */
+  settleSeq: number;
   idleWaiters: Set<() => void>;
 }
 
@@ -198,6 +211,8 @@ function makeTerminal(paneId: string): PaneTerminal {
     settlePendingSince: 0,
     stopDeadline: 0,
     tail: "",
+    promptText: null,
+    settleSeq: 0,
     idleWaiters: new Set(),
   };
 
@@ -344,8 +359,19 @@ function cursorLine(entry: PaneTerminal): string {
   return text;
 }
 
-function isAtPrompt(entry: PaneTerminal): boolean {
-  return PROMPT_RE.test(cursorLine(entry));
+/**
+ * Windows reads the screen for a cmd/PowerShell prompt. Elsewhere the OS
+ * knows who owns the terminal. If it can't say (the shell is gone, or the
+ * answer failed) the screen is no better, so it counts as idle.
+ */
+async function detectActivity(entry: PaneTerminal): Promise<ShellActivity> {
+  if (IS_WINDOWS) return PROMPT_RE.test(cursorLine(entry)) ? "idle" : "busy";
+  if (!entry.shellPtyId) return "idle";
+  try {
+    return (await ptyBusy(entry.shellPtyId)) ? "busy" : "idle";
+  } catch {
+    return "idle";
+  }
 }
 
 function resolveIdleWaiters(entry: PaneTerminal) {
@@ -361,7 +387,19 @@ function runSettle(entry: PaneTerminal) {
   }
   entry.settlePendingSince = 0;
 
-  const next: ShellActivity = isAtPrompt(entry) ? "idle" : "busy";
+  const seq = ++entry.settleSeq;
+  void detectActivity(entry).then((next) => {
+    if (seq !== entry.settleSeq) return; // a newer settle already answered
+    applyActivity(entry, next);
+  });
+}
+
+function applyActivity(entry: PaneTerminal, next: ShellActivity) {
+  // The first idle after a command is the new prompt, with nothing typed yet.
+  if (!IS_WINDOWS && next === "idle" && entry.promptText === null) {
+    const line = cursorLine(entry);
+    if (line.trim() !== "") entry.promptText = line; // not a half-drawn prompt
+  }
   if (next === entry.activity) return;
   entry.activity = next;
   if (next === "idle") {
@@ -398,7 +436,7 @@ function handleOutput(entry: PaneTerminal, chunk: string) {
 
   // Only inside a stop window, so a legitimate "(y/n)" question from the
   // user's own program is never answered behind their back.
-  if (entry.stopDeadline > Date.now()) {
+  if (IS_WINDOWS && entry.stopDeadline > Date.now()) {
     const match = BATCH_PROMPT_RE.exec(entry.tail);
     if (match) {
       entry.tail = "";
@@ -434,6 +472,7 @@ function handleInput(entry: PaneTerminal, paneId: string, data: string): void {
       entry.lastCommand = cmd;
       entry.hooks.onCommand?.(cmd);
     }
+    entry.promptText = null; // whatever comes next is a new prompt
   }
   // A hand-typed Ctrl+C deserves the same batch-prompt handling as the
   // Stop button, otherwise the user is back to answering Y themselves.
@@ -444,6 +483,10 @@ function handleInput(entry: PaneTerminal, paneId: string, data: string): void {
 /** Everything the user typed after the prompt on the current line. */
 function pendingCommand(entry: PaneTerminal): string {
   const text = cursorLine(entry);
+  if (!IS_WINDOWS) {
+    const prompt = entry.promptText;
+    return prompt !== null && text.startsWith(prompt) ? text.slice(prompt.length).trim() : "";
+  }
   const match = PROMPT_RE.exec(text);
   if (!match) return "";
   return text.slice(match[0].length).trim();
@@ -492,19 +535,21 @@ export function waitForIdle(paneId: string, timeoutMs = 8000): Promise<boolean> 
 export function writeToPane(paneId: string, data: string): Promise<void> {
   const entry = cache.get(paneId);
   if (!entry?.shellPtyId) return Promise.resolve();
+  if (/[\r\n]/.test(data)) entry.promptText = null; // a command goes in: a new prompt follows
   return ptyWrite(entry.shellPtyId, data);
 }
 
 // ── Shell lifecycle ────────────────────────────────────────────────────────
 
 function shellCommand(): { command: string; args: string[] } {
-  // Windows-only for now. cmd.exe is universally available; PowerShell
-  // could be a per-service preference later.
-  return { command: "cmd", args: [] };
+  // cmd.exe is universally available on Windows; PowerShell could be a
+  // per-service preference later. Elsewhere an empty command asks the
+  // backend for the user's own $SHELL.
+  return IS_WINDOWS ? { command: "cmd", args: [] } : { command: "", args: [] };
 }
 
 /**
- * Spawn the persistent cmd shell for `paneId` if it isn't already running.
+ * Spawn the persistent shell for `paneId` if it isn't already running.
  * Idempotent — calling twice is a no-op once a shell is up.
  */
 export async function ensureShell(
